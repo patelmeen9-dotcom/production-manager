@@ -1,0 +1,362 @@
+You are the lead software architect and senior full-stack engineer responsible for building a production-ready Production Management SaaS.
+
+I am providing you with two specification files:
+
+1. `PRODUCTION_SAAS_BUILD_PLAN.md`
+2. `PRODUCTION_SAAS_RULES.md`
+
+Read BOTH files completely before making architectural decisions or writing substantial code.
+
+## Your job
+
+Build the application described in those two files.
+
+The two markdown files are the source of truth.
+
+- `PRODUCTION_SAAS_RULES.md` contains non-negotiable business and engineering rules.
+- `PRODUCTION_SAAS_BUILD_PLAN.md` defines the order in which the application should be built.
+
+Do not reinterpret or simplify requirements merely to make implementation easier.
+
+---
+
+## Technology
+
+Use the existing project stack where it is compatible with the specification.
+
+Preferred stack:
+
+- Next.js App Router
+- TypeScript
+- PostgreSQL
+- Prisma
+- Secure authentication
+- Server-side authorization
+- Responsive UI
+- Docker-compatible deployment
+
+If an existing project already contains a working implementation, inspect it before changing it.
+
+Do not unnecessarily rewrite working code.
+
+---
+
+# Critical Instructions
+
+## 1. Build incrementally
+
+Do NOT attempt to build the entire SaaS in one step.
+
+Start with Phase 0 and Phase 1 from the build plan.
+
+After completing a phase:
+
+1. Explain what was implemented.
+2. Explain the important architectural/database decisions.
+3. List the files created or modified.
+4. Run the appropriate checks/tests/build.
+5. Fix errors.
+6. State what is ready for the next phase.
+
+Then proceed to the next phase.
+
+---
+
+## 2. Database first where appropriate
+
+Before building substantial UI for a feature, make sure its database model and business logic are correct.
+
+For the production system, pay particular attention to:
+
+- Organization
+- User
+- UserPlantAccess
+- Plant
+- Client
+- Product
+- Process
+- PlantProductProcessMapping
+- SpecialActivity
+- ProductionOrder
+- ProductionOrderProcess snapshot
+- ProductionEntry
+- SpecialActivityEntry
+- AuditLog
+
+Do not assume this exact naming is mandatory if the existing codebase uses different conventions, but preserve the same concepts and relationships.
+
+---
+
+## 3. Multi-tenancy is mandatory
+
+This is a SaaS.
+
+Every tenant-owned record must be scoped to an Organization.
+
+Never rely on frontend filtering for security.
+
+Every protected server-side query and mutation must enforce organization membership.
+
+A user from Organization A must never see Organization B data.
+
+---
+
+## 4. Multiple plants are mandatory
+
+One organization can have many plants.
+
+Users can have access to multiple plants.
+
+Users must be able to switch their active plant.
+
+Management users may have an All Plants view.
+
+Implement plant authorization server-side.
+
+---
+
+## 5. Production Start Date
+
+Production Start Date is OPTIONAL.
+
+If supplied:
+
+Effective Start Date = supplied Production Start Date.
+
+If not supplied:
+
+Effective Start Date = Order Date.
+
+If a future start date exists, the order must not be flagged as delayed before that date.
+
+Default start-delay thresholds:
+
+- more than 2 days → warning
+- more than 5 days → critical/delayed
+
+These thresholds should be configurable.
+
+---
+
+## 6. Due Date
+
+Allow:
+
+- fixed due date
+- number of days from order date
+
+Preserve the input method.
+
+---
+
+## 7. Incremental production
+
+Production entries are incremental.
+
+Example:
+
+30 Aug → Cutting → 200
+31 Aug → Cutting → 300
+
+means cumulative Cutting = 500.
+
+Never treat 300 as the cumulative value.
+
+---
+
+## 8. Process mapping
+
+Production stages are configurable.
+
+Never hard-code a five-stage production process.
+
+Plant/product mappings determine the process sequence.
+
+When an order is created, create an order-specific process snapshot so later master changes do not alter historical orders.
+
+---
+
+## 9. Production validation
+
+For sequential processes:
+
+cumulative Stage N <= cumulative Stage N-1
+
+Reject invalid downstream quantities.
+
+All important validation must happen server-side.
+
+---
+
+## 10. Derived values
+
+Do not make users manually enter:
+
+- current stage
+- completion percentage
+- pending quantity
+- expected completion
+- delay status
+
+Calculate these from source data.
+
+Keep the calculation logic in reusable server-side services.
+
+---
+
+## 11. Dashboard
+
+Implement:
+
+1. Live Tracking
+   - On Time
+   - Getting Delayed
+   - Delayed
+   - Not Started / Start Warning / Start Delayed
+
+2. Weekly Production Graph
+
+3. Pending Orders — Client Wise
+
+4. Monthly Production — Client Wise
+
+Support appropriate filters for:
+
+- plant
+- client
+- product
+- order
+- stage
+- date range
+- status
+
+---
+
+## 12. Performance
+
+Design for multi-year data.
+
+Do not load five years of production records into the browser.
+
+Use database aggregation, filtering, pagination and indexes.
+
+PostgreSQL remains the source of truth.
+
+Caching can be added later.
+
+Do not prematurely introduce Redis or complex distributed infrastructure.
+
+---
+
+## 13. Hosting
+
+The application must be portable.
+
+It should work on:
+
+- Hostinger VPS
+- AWS
+- other Linux VPS/cloud environments
+
+Do not use hosting-provider-specific logic.
+
+Use Docker-compatible configuration and environment variables.
+
+---
+
+## 14. Existing second application
+
+There is also an existing showroom/product website that will be hosted alongside this SaaS.
+
+It stores product data and displays product images.
+
+Keep the deployment architecture capable of running multiple Node.js applications.
+
+Do not put large image binaries into PostgreSQL unless specifically required.
+
+---
+
+# Development protocol
+
+For every phase:
+
+### Step A — Inspect
+
+Inspect the existing repository before changing it.
+
+Understand:
+
+- current framework
+- existing Prisma schema
+- authentication
+- routes
+- components
+- environment configuration
+- deployment setup
+
+### Step B — Plan
+
+Briefly state what you are going to implement.
+
+### Step C — Implement
+
+Make the smallest clean set of changes necessary.
+
+### Step D — Validate
+
+Run:
+
+- type checking
+- linting where available
+- relevant tests
+- Prisma validation/migration checks
+- production build where appropriate
+
+### Step E — Fix
+
+Do not leave known build/type/runtime errors unresolved.
+
+### Step F — Report
+
+Summarize:
+
+- what changed
+- important files
+- database changes
+- tests/checks
+- any remaining issue
+
+Then move to the next phase.
+
+---
+
+# Important behavior
+
+Do not create fake functionality just to make the UI look complete.
+
+If a dashboard metric depends on real production calculations, implement the actual calculation service.
+
+Do not hard-code dashboard numbers.
+
+Do not hard-code production stages.
+
+Do not hard-code organization or plant IDs.
+
+Do not bypass authorization for development convenience.
+
+Use realistic seed/test data to verify the production flow.
+
+---
+
+# Start now
+
+First:
+
+1. Read `PRODUCTION_SAAS_BUILD_PLAN.md`.
+2. Read `PRODUCTION_SAAS_RULES.md`.
+3. Inspect the existing project.
+4. Summarize the architecture you will use.
+5. Identify only genuine blockers.
+6. Begin Phase 1.
+
+Do not jump ahead to the final dashboard before the foundational architecture and production data model are correct.

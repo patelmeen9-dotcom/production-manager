@@ -1,0 +1,446 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  SUPER_ADMIN
+  ORGANIZATION_ADMIN
+  PRODUCTION_MANAGER
+  PRODUCTION_OPERATOR
+  VIEWER
+}
+
+/// Tenant. Every tenant-owned record must reference this id.
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  isActive  Boolean  @default(true)
+  /// JSON object matching OrganizationSettings (thresholds, etc.)
+  settings  Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users User[]
+  plants Plant[]
+  userPlantAccess UserPlantAccess[]
+  clients Client[]
+  products Product[]
+  processes Process[]
+  processMappings PlantProductProcessMapping[]
+  specialActivities SpecialActivity[]
+  productionOrders ProductionOrder[]
+  orderProcesses ProductionOrderProcess[]
+  orderSpecialActivities ProductionOrderSpecialActivity[]
+  productionEntries ProductionEntry[]
+  specialActivityEntries SpecialActivityEntry[]
+  auditLogs AuditLog[]
+  importJobs ImportJob[]
+
+  @@index([isActive])
+}
+
+/// Application user. Organization is derived from this record, never from the client.
+model User {
+  id             String   @id @default(cuid())
+  /// Null only for SUPER_ADMIN (platform operator). All tenant roles require an organization.
+  organizationId String?
+  email          String   @unique
+  passwordHash   String
+  name           String
+  role           Role
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  plantAccess  UserPlantAccess[]
+  createdOrders ProductionOrder[]
+  productionEntries ProductionEntry[]
+  specialActivityEntries SpecialActivityEntry[]
+  auditLogs AuditLog[]
+  importJobs ImportJob[]
+
+  @@index([organizationId])
+  @@index([organizationId, role])
+  @@index([isActive])
+}
+
+model Plant {
+  id             String   @id @default(cuid())
+  organizationId String
+  /// Stable external reference code for Excel imports (PlantCode).
+  code           String
+  name           String
+  location       String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  userAccess   UserPlantAccess[]
+  processMappings PlantProductProcessMapping[]
+  productionOrders ProductionOrder[]
+  productionEntries ProductionEntry[]
+  specialActivityEntries SpecialActivityEntry[]
+
+  @@unique([organizationId, code])
+  @@unique([organizationId, name])
+  @@index([organizationId, isActive])
+}
+
+/// User does not own a plant. Access is an explicit many-to-many grant.
+model UserPlantAccess {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  plantId        String
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plant        Plant        @relation(fields: [plantId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, plantId])
+  @@index([organizationId, userId])
+  @@index([organizationId, plantId])
+}
+
+model Client {
+  id             String   @id @default(cuid())
+  organizationId String
+  /// Stable external reference code for Excel imports (ClientCode).
+  code           String
+  name           String
+  contactName    String?
+  contactEmail   String?
+  contactPhone   String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  productionOrders ProductionOrder[]
+
+  @@unique([organizationId, code])
+  @@unique([organizationId, name])
+  @@index([organizationId, isActive])
+}
+
+model Product {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  code           String
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization    Organization                  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  processMappings PlantProductProcessMapping[]
+  productionOrders ProductionOrder[]
+
+  @@unique([organizationId, code])
+  @@unique([organizationId, name])
+  @@index([organizationId, isActive])
+}
+model Process {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  code           String
+  description    String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization    Organization                  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  processMappings PlantProductProcessMapping[]
+  orderProcesses  ProductionOrderProcess[]
+
+  @@unique([organizationId, code])
+  @@unique([organizationId, name])
+  @@index([organizationId, isActive])
+}
+model PlantProductProcessMapping {
+  id             String   @id @default(cuid())
+  organizationId String
+  plantId        String
+  productId      String
+  processId      String
+  sequence       Int
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  plant        Plant        @relation(fields: [plantId], references: [id], onDelete: Restrict)
+  product      Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  process      Process      @relation(fields: [processId], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, plantId, productId, processId], map: "pppm_org_plant_product_process_key")
+  @@unique([organizationId, plantId, productId, sequence], map: "pppm_org_plant_product_seq_key")
+  @@index([organizationId, plantId, productId], map: "pppm_org_plant_product_idx")
+  @@index([organizationId, plantId, isActive], map: "pppm_org_plant_active_idx")
+}
+
+enum SpecialActivityType {
+  SPECIAL_PROCESS
+  REWORK
+  OTHER
+}
+
+/// Auxiliary work. Not inserted into the main process sequence unless mapped there explicitly.
+model SpecialActivity {
+  id             String              @id @default(cuid())
+  organizationId String
+  name           String
+  code           String
+  activityType   SpecialActivityType
+  isActive       Boolean             @default(true)
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  entries      SpecialActivityEntry[]
+  orderRequests ProductionOrderSpecialActivity[]
+  productionEntries ProductionEntry[]
+
+  @@unique([organizationId, code])
+  @@unique([organizationId, name])
+  @@index([organizationId, isActive])
+}
+
+enum OrderLifecycleStatus {
+  NOT_STARTED
+  IN_PRODUCTION
+  COMPLETED
+  CANCELLED
+  ON_HOLD
+}
+
+enum DateInputType {
+  FIXED_DATE
+  DAYS_FROM_ORDER
+  /// Due date = Effective Start Date + dueDays (default for new orders).
+  DAYS_FROM_START
+  NONE
+}
+
+enum OrderPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+model ProductionOrder {
+  id                 String               @id @default(cuid())
+  organizationId     String
+  plantId            String
+  clientId           String
+  productId          String
+  createdByUserId    String
+  orderNumber        String
+  quantity           Int
+  orderDate          DateTime             @db.Date
+  startDateType      DateInputType        @default(NONE)
+  startDate          DateTime?            @db.Date
+  startDays          Int?
+  effectiveStartDate DateTime             @db.Date
+  dueDateType        DateInputType
+  dueDate            DateTime?            @db.Date
+  dueDays            Int?
+  resolvedDueDate    DateTime             @db.Date
+  priority           OrderPriority        @default(NORMAL)
+  remarks            String?
+  /// When true, one or more SpecialActivity rows are requested on this order (see requestedSpecialActivities).
+  specialActivitiesRequested Boolean      @default(false)
+  lifecycleStatus    OrderLifecycleStatus @default(NOT_STARTED)
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  plant        Plant                    @relation(fields: [plantId], references: [id], onDelete: Restrict)
+  client       Client                   @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  product      Product                  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  createdBy    User                     @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  processes    ProductionOrderProcess[]
+  requestedSpecialActivities ProductionOrderSpecialActivity[]
+  productionEntries ProductionEntry[]
+  specialActivityEntries SpecialActivityEntry[]
+
+  @@unique([organizationId, orderNumber])
+  @@index([organizationId, plantId, orderDate])
+  @@index([organizationId, plantId, createdAt(sort: Desc)], map: "ProductionOrder_org_plant_created_idx")
+  @@index([organizationId, clientId])
+  @@index([organizationId, lifecycleStatus])
+  @@index([organizationId, effectiveStartDate])
+  @@index([organizationId, resolvedDueDate])
+}
+
+/// Order-requested special/auxiliary activities. Not part of the main process sequence.
+model ProductionOrderSpecialActivity {
+  id                String   @id @default(cuid())
+  organizationId    String
+  productionOrderId String
+  specialActivityId String
+  createdAt         DateTime @default(now())
+
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  productionOrder ProductionOrder @relation(fields: [productionOrderId], references: [id], onDelete: Cascade)
+  specialActivity SpecialActivity @relation(fields: [specialActivityId], references: [id], onDelete: Restrict)
+
+  @@unique([productionOrderId, specialActivityId])
+  @@index([organizationId, productionOrderId])
+}
+
+/// Order-specific copy of the plant/product process mapping at creation time.
+model ProductionOrderProcess {
+  id                String   @id @default(cuid())
+  organizationId    String
+  productionOrderId String
+  processId         String?
+  processName       String
+  processCode       String
+  sequence          Int
+  plannedQuantity   Int
+  createdAt         DateTime @default(now())
+
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  productionOrder ProductionOrder @relation(fields: [productionOrderId], references: [id], onDelete: Cascade)
+  process         Process?        @relation(fields: [processId], references: [id], onDelete: SetNull)
+  productionEntries ProductionEntry[]
+  specialActivityEntries SpecialActivityEntry[]
+
+  @@unique([productionOrderId, sequence])
+  @@index([organizationId, productionOrderId])
+}
+
+/// Incremental quantity completed on a date. Never a cumulative total.
+model ProductionEntry {
+  id                String   @id @default(cuid())
+  organizationId    String
+  plantId           String
+  productionOrderId String
+  orderProcessId    String
+  /// Optional link to an order-requested special activity. Never part of the stage sequence.
+  specialActivityId String?
+  entryDate         DateTime @db.Date
+  quantity          Int
+  remarks           String?
+  createdByUserId   String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  organization    Organization           @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  plant           Plant                  @relation(fields: [plantId], references: [id], onDelete: Restrict)
+  productionOrder ProductionOrder        @relation(fields: [productionOrderId], references: [id], onDelete: Restrict)
+  orderProcess    ProductionOrderProcess @relation(fields: [orderProcessId], references: [id], onDelete: Restrict)
+  specialActivity SpecialActivity?       @relation(fields: [specialActivityId], references: [id], onDelete: SetNull)
+  createdBy       User                   @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, productionOrderId, orderProcessId], map: "pe_org_order_process_idx")
+  @@index([organizationId, plantId, entryDate], map: "pe_org_plant_date_idx")
+  @@index([organizationId, entryDate], map: "pe_org_date_idx")
+  @@index([organizationId, createdAt], map: "pe_org_created_idx")
+  @@index([organizationId, entryDate(sort: Desc), createdAt(sort: Desc)], map: "ProductionEntry_org_date_created_idx")
+  @@index([organizationId, specialActivityId])
+}
+
+/// Auxiliary / rework recording. Does not rewrite production history.
+model SpecialActivityEntry {
+  id                 String   @id @default(cuid())
+  organizationId     String
+  plantId            String
+  productionOrderId  String
+  specialActivityId  String
+  orderProcessId     String?
+  entryDate          DateTime @db.Date
+  quantity           Int
+  remarks            String?
+  createdByUserId    String
+  createdAt          DateTime @default(now())
+
+  organization    Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  plant           Plant                   @relation(fields: [plantId], references: [id], onDelete: Restrict)
+  productionOrder ProductionOrder         @relation(fields: [productionOrderId], references: [id], onDelete: Restrict)
+  specialActivity SpecialActivity         @relation(fields: [specialActivityId], references: [id], onDelete: Restrict)
+  orderProcess    ProductionOrderProcess? @relation(fields: [orderProcessId], references: [id], onDelete: SetNull)
+  createdBy       User                    @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, productionOrderId])
+  @@index([organizationId, plantId, entryDate])
+}
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  action         String
+  entityType     String
+  entityId       String
+  previousValue  Json?
+  newValue       Json?
+  reason         String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, createdAt(sort: Desc)], map: "AuditLog_org_created_idx")
+  @@index([organizationId, entityType, entityId])
+}
+
+enum ImportJobStatus {
+  UPLOADED
+  VALIDATED
+  VALIDATION_FAILED
+  COMMITTED
+  FAILED
+  CANCELLED
+}
+
+enum ImportDuplicateStrategy {
+  CREATE_OR_UPDATE
+  SKIP_EXISTING
+  FAIL_ON_DUPLICATE
+}
+
+/// Controlled Excel migration job. Rows are not written to production tables until confirmation.
+model ImportJob {
+  id                 String                  @id @default(cuid())
+  organizationId     String
+  uploadedByUserId   String
+  fileName           String
+  importType         String                  @default("FULL_WORKBOOK")
+  duplicateStrategy  ImportDuplicateStrategy @default(CREATE_OR_UPDATE)
+  status             ImportJobStatus         @default(UPLOADED)
+  startedAt          DateTime                @default(now())
+  validatedAt        DateTime?
+  completedAt        DateTime?
+  totalRows          Int                     @default(0)
+  successfulRows     Int                     @default(0)
+  failedRows         Int                     @default(0)
+  warningCount       Int                     @default(0)
+  /// Parsed/validated preview payload awaiting confirmation. Not production data.
+  previewPayload     Json?
+  /// Sheet summaries for preview UI.
+  summary            Json?
+  /// Validation/import errors for downloadable report.
+  errorReport        Json?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  uploadedBy   User         @relation(fields: [uploadedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, status])
+}
