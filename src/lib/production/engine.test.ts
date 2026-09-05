@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_ORGANIZATION_SETTINGS } from "@/lib/organization-settings";
 import { parseDateOnly } from "@/lib/orders/date-rules";
 import { assertValidProductionEntry } from "@/lib/production/validate";
-import { evaluateOrder, resolveStartStatus } from "@/lib/production/engine";
+import { evaluateOrder, resolveStartStatus, timingFromExpectedDays } from "@/lib/production/engine";
 import { AppError } from "@/lib/errors";
 
 const processes = [
@@ -151,5 +151,79 @@ describe("production timing", () => {
       settings,
     });
     expect(result.timingStatus).not.toBe("DELAYED");
+  });
+
+  it("marks DELAYED when behind units-per-day plan", () => {
+    // 500 units @ 250/day => 2 plan days for cutting; asOf day 4 with only 10 done => delayed
+    const planned = processes.map((process, index) => ({
+      ...process,
+      unitsPerDay: index === 0 ? 250 : 100,
+    }));
+    const result = evaluateOrder({
+      orderQuantity: 500,
+      effectiveStartDate: parseDateOnly("2026-08-01"),
+      resolvedDueDate: parseDateOnly("2026-09-30"),
+      lifecycleStatus: "IN_PRODUCTION",
+      processes: planned,
+      entries: [{ orderProcessId: "cut", quantity: 10 }],
+      firstEntryDate: parseDateOnly("2026-08-01"),
+      asOfDate: parseDateOnly("2026-08-04"),
+      settings,
+    });
+    expect(result.timingStatus).toBe("DELAYED");
+    expect(result.displayStatus).toBe("DELAYED");
+  });
+
+  it("marks GETTING_DELAYED near the expected-days stage deadline", () => {
+    const planned = processes.map((process) => ({ ...process, expectedDays: 5 }));
+    const result = evaluateOrder({
+      orderQuantity: 500,
+      effectiveStartDate: parseDateOnly("2026-08-01"),
+      resolvedDueDate: parseDateOnly("2026-09-30"),
+      lifecycleStatus: "IN_PRODUCTION",
+      processes: planned,
+      entries: [{ orderProcessId: "cut", quantity: 10 }],
+      firstEntryDate: parseDateOnly("2026-08-01"),
+      asOfDate: parseDateOnly("2026-08-04"),
+      settings,
+    });
+    expect(result.timingStatus).toBe("GETTING_DELAYED");
+  });
+});
+
+describe("timingFromExpectedDays", () => {
+  it("returns null when any stage lacks plan days and units/day", () => {
+    expect(
+      timingFromExpectedDays({
+        stages: [
+          {
+            id: "cut",
+            sequence: 1,
+            processName: "Cutting",
+            processCode: "CUT",
+            plannedQuantity: 100,
+            expectedDays: 2,
+            cumulative: 0,
+            remaining: 100,
+            percentComplete: 0,
+          },
+          {
+            id: "frame",
+            sequence: 2,
+            processName: "Framing",
+            processCode: "FRM",
+            plannedQuantity: 100,
+            expectedDays: null,
+            unitsPerDay: null,
+            cumulative: 0,
+            remaining: 100,
+            percentComplete: 0,
+          },
+        ],
+        effectiveStartDate: parseDateOnly("2026-08-01"),
+        asOfDate: parseDateOnly("2026-08-10"),
+        gettingDelayedLeadDays: settings.gettingDelayedLeadDays,
+      }),
+    ).toBeNull();
   });
 });

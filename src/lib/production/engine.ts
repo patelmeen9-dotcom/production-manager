@@ -103,6 +103,8 @@ export function evaluateOrder(input: {
     firstEntryDate: input.firstEntryDate,
     asOfDate: input.asOfDate,
     dueDate: input.resolvedDueDate,
+    effectiveStartDate: input.effectiveStartDate,
+    stages,
     settings: input.settings,
   });
 
@@ -155,6 +157,8 @@ function resolveTimingStatus(input: {
   firstEntryDate: Date | null;
   asOfDate: Date;
   dueDate: Date;
+  effectiveStartDate: Date;
+  stages: StageState[];
   settings: OrganizationSettings;
 }): { status: TimingStatus; ratePerDay: number | null; estimatedCompletionDate: Date | null } {
   if (input.lifecycleStatus === "CANCELLED" || input.lifecycleStatus === "ON_HOLD" || !input.productionStarted) {
@@ -164,23 +168,121 @@ function resolveTimingStatus(input: {
     return { status: "ON_TIME", ratePerDay: null, estimatedCompletionDate: input.asOfDate };
   }
 
+  const ratePerDay = rate(input);
+  const estimatedFromRate = estimate(input);
+  const estimatedFromPlan = estimateFromExpectedDays(input.stages, input.asOfDate);
+  const estimatedCompletionDate = estimatedFromPlan ?? estimatedFromRate;
+
   const pastDue = utcDayDiff(input.dueDate, input.asOfDate) > 0;
   if (pastDue && input.remainingQuantity > 0) {
-    return { status: "DELAYED", ratePerDay: rate(input), estimatedCompletionDate: estimate(input) };
+    return { status: "DELAYED", ratePerDay, estimatedCompletionDate };
   }
 
-  const estimatedCompletionDate = estimate(input);
-  const ratePerDay = rate(input);
-  if (estimatedCompletionDate && utcDayDiff(input.dueDate, estimatedCompletionDate) > 0) {
+  const planStatus = timingFromExpectedDays({
+    stages: input.stages,
+    effectiveStartDate: input.effectiveStartDate,
+    asOfDate: input.asOfDate,
+    gettingDelayedLeadDays: input.settings.gettingDelayedLeadDays,
+  });
+  if (planStatus === "DELAYED") {
+    return { status: "DELAYED", ratePerDay, estimatedCompletionDate };
+  }
+
+  if (estimatedFromRate && utcDayDiff(input.dueDate, estimatedFromRate) > 0) {
+    return { status: "GETTING_DELAYED", ratePerDay, estimatedCompletionDate: estimatedFromRate };
+  }
+  if (planStatus === "GETTING_DELAYED") {
     return { status: "GETTING_DELAYED", ratePerDay, estimatedCompletionDate };
   }
-  if (!estimatedCompletionDate) {
+  if (!estimatedFromRate && !estimatedFromPlan) {
     const daysUntilDue = utcDayDiff(input.asOfDate, input.dueDate);
     if (daysUntilDue <= input.settings.gettingDelayedLeadDays && input.remainingQuantity > 0) {
       return { status: "GETTING_DELAYED", ratePerDay, estimatedCompletionDate };
     }
   }
   return { status: "ON_TIME", ratePerDay, estimatedCompletionDate };
+}
+
+/**
+ * Planned calendar days for a stage: explicit expectedDays, else ceil(qty / unitsPerDay).
+ */
+export function stagePlanDays(stage: Pick<StageState, "plannedQuantity" | "expectedDays" | "unitsPerDay">): number | null {
+  if (stage.expectedDays != null && stage.expectedDays > 0) {
+    return stage.expectedDays;
+  }
+  if (stage.unitsPerDay != null && stage.unitsPerDay > 0 && stage.plannedQuantity > 0) {
+    return Math.max(1, Math.ceil(stage.plannedQuantity / stage.unitsPerDay));
+  }
+  return null;
+}
+
+/**
+ * Uses cumulative planned days from effective start to judge whether the current stage is behind plan.
+ * Stage N should finish by start + sum(planDays[1..N]).
+ * Plan days come from expectedDays or unitsPerDay (quantity ÷ units/day).
+ */
+export function timingFromExpectedDays(input: {
+  stages: StageState[];
+  effectiveStartDate: Date;
+  asOfDate: Date;
+  gettingDelayedLeadDays: number;
+}): TimingStatus | null {
+  const stages = [...input.stages].sort((a, b) => a.sequence - b.sequence);
+  if (stages.length === 0) {
+    return null;
+  }
+  const planDays = stages.map((stage) => stagePlanDays(stage));
+  if (planDays.some((days) => days == null)) {
+    return null;
+  }
+
+  let elapsedDays = 0;
+  for (let index = 0; index < stages.length; index++) {
+    const stage = stages[index]!;
+    elapsedDays += planDays[index]!;
+    if (stage.cumulative >= stage.plannedQuantity) {
+      continue;
+    }
+    const stageDue = addUtcDays(input.effectiveStartDate, elapsedDays);
+    const daysPastDue = utcDayDiff(stageDue, input.asOfDate);
+    if (daysPastDue > 0) {
+      return "DELAYED";
+    }
+    const daysUntilStageDue = utcDayDiff(input.asOfDate, stageDue);
+    if (daysUntilStageDue <= input.gettingDelayedLeadDays) {
+      return "GETTING_DELAYED";
+    }
+    return "ON_TIME";
+  }
+  return "ON_TIME";
+}
+
+function estimateFromExpectedDays(stages: StageState[], asOfDate: Date): Date | null {
+  const sorted = [...stages].sort((a, b) => a.sequence - b.sequence);
+  if (sorted.length === 0) {
+    return null;
+  }
+  let remainingDays = 0;
+  for (const stage of sorted) {
+    if (stage.cumulative >= stage.plannedQuantity) {
+      continue;
+    }
+    const remaining = Math.max(0, stage.plannedQuantity - stage.cumulative);
+    if (stage.unitsPerDay != null && stage.unitsPerDay > 0) {
+      remainingDays += remaining / stage.unitsPerDay;
+      continue;
+    }
+    const planDays = stagePlanDays(stage);
+    if (planDays == null) {
+      return null;
+    }
+    const fractionLeft = stage.plannedQuantity === 0 ? 0 : remaining / stage.plannedQuantity;
+    remainingDays += fractionLeft * planDays;
+  }
+  if (remainingDays <= 0) {
+    return asOfDate;
+  }
+  return addUtcDays(asOfDate, Math.ceil(remainingDays));
 }
 
 function rate(input: { completedQuantity: number; firstEntryDate: Date | null; asOfDate: Date }): number | null {

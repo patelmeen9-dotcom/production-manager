@@ -49,6 +49,13 @@ export default async function OrdersPage({
         client: { select: { name: true } },
         product: { select: { name: true } },
         plant: { select: { name: true } },
+        lines: {
+          select: {
+            quantity: true,
+            product: { select: { name: true } },
+          },
+          orderBy: { lineNumber: "asc" },
+        },
       },
       orderBy: { createdAt: "desc" },
       skip,
@@ -77,13 +84,23 @@ export default async function OrdersPage({
               <div>
                 <p className="text-white">{order.orderNumber}</p>
                 <p className="text-sm text-slate-400">
-                  {order.client.name} · {order.product.name} · {order.plant.name} · qty {order.quantity} · due{" "}
-                  {formatDateOnly(order.resolvedDueDate)}
+                  {order.client.name} ·{" "}
+                  {order.lines.length > 0
+                    ? order.lines.map((line) => `${line.product.name}×${line.quantity}`).join(", ")
+                    : order.product.name}{" "}
+                  · {order.plant.name} · total {order.quantity} · due {formatDateOnly(order.resolvedDueDate)}
                 </p>
               </div>
-              <Link className="text-sm text-sky-400" href={`/orders/${order.id}`}>
-                View
-              </Link>
+              <div className="flex gap-3">
+                {manage ? (
+                  <Link className="text-sm text-sky-400" href={`/orders/${order.id}/edit`}>
+                    Edit
+                  </Link>
+                ) : null}
+                <Link className="text-sm text-sky-400" href={`/orders/${order.id}`}>
+                  View
+                </Link>
+              </div>
             </li>
           ))
         )}

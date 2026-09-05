@@ -60,6 +60,9 @@ export function AppHeader(props: {
           <Link className="text-ink-soft hover:text-ink" href="/products">
             Products
           </Link>
+          <Link className="text-ink-soft hover:text-ink" href="/product-categories">
+            Product categories
+          </Link>
           <Link className="text-ink-soft hover:text-ink" href="/processes">
             Processes
           </Link>

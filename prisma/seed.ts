@@ -157,20 +157,106 @@ async function main() {
     create: { organizationId: acme.id, name: "Window", code: "WINDOW", isActive: true },
   });
 
-  async function upsertProcess(organizationId: string, name: string, code: string) {
+  async function upsertCategory(input: {
+    code: string;
+    name: string;
+    inputType: "OPEN_TEXT" | "DROPDOWN";
+    choiceMode?: "SINGLE" | "MULTI" | null;
+    options?: { code: string; name: string }[];
+  }) {
+    const category = await prisma.productCategory.upsert({
+      where: { organizationId_code: { organizationId: acme.id, code: input.code } },
+      update: {
+        name: input.name,
+        isActive: true,
+        inputType: input.inputType,
+        choiceMode: input.inputType === "DROPDOWN" ? input.choiceMode ?? "SINGLE" : null,
+      },
+      create: {
+        organizationId: acme.id,
+        code: input.code,
+        name: input.name,
+        inputType: input.inputType,
+        choiceMode: input.inputType === "DROPDOWN" ? input.choiceMode ?? "SINGLE" : null,
+        isActive: true,
+      },
+    });
+    if (input.inputType === "DROPDOWN" && input.options) {
+      await prisma.productCategoryOption.deleteMany({ where: { productCategoryId: category.id } });
+      await prisma.productCategoryOption.createMany({
+        data: input.options.map((option, index) => ({
+          organizationId: acme.id,
+          productCategoryId: category.id,
+          code: option.code,
+          name: option.name,
+          sortOrder: index,
+          isActive: true,
+          updatedAt: new Date(),
+        })),
+      });
+    }
+    await prisma.productCategoryAssignment.upsert({
+      where: { productId_productCategoryId: { productId: door.id, productCategoryId: category.id } },
+      update: {},
+      create: { organizationId: acme.id, productId: door.id, productCategoryId: category.id },
+    });
+    return category;
+  }
+
+  const thickness = await upsertCategory({
+    code: "THICKNESS",
+    name: "Thickness",
+    inputType: "DROPDOWN",
+    choiceMode: "SINGLE",
+    options: [
+      { code: "30MM", name: "30 MM" },
+      { code: "32MM", name: "32 MM" },
+      { code: "35MM", name: "35 MM" },
+      { code: "40MM", name: "40 MM" },
+    ],
+  });
+  await upsertCategory({
+    code: "FILLER",
+    name: "Filler",
+    inputType: "DROPDOWN",
+    choiceMode: "SINGLE",
+    options: [
+      { code: "PINE", name: "Pine" },
+      { code: "HARDWOOD", name: "Hardwood" },
+      { code: "PARTICLE", name: "Particle Board" },
+    ],
+  });
+  await upsertCategory({
+    code: "FEATURES",
+    name: "Door features",
+    inputType: "DROPDOWN",
+    choiceMode: "MULTI",
+    options: [
+      { code: "LIPPING", name: "Lipping Patti" },
+      { code: "VISION", name: "Vision Panel" },
+      { code: "ACOUSTIC", name: "Acoustic Door" },
+      { code: "DOUBLE", name: "Double Door" },
+    ],
+  });
+  await upsertCategory({
+    code: "NOTES",
+    name: "Extra notes",
+    inputType: "OPEN_TEXT",
+  });
+  async function upsertProcess(organizationId: string, name: string, code: string, unitsPerDay?: number) {
     return prisma.process.upsert({
       where: { organizationId_code: { organizationId, code } },
-      update: { name, isActive: true },
-      create: { organizationId, name, code, isActive: true },
+      update: { name, isActive: true, unitsPerDay: unitsPerDay ?? null },
+      create: { organizationId, name, code, isActive: true, unitsPerDay: unitsPerDay ?? null },
     });
   }
 
-  const cutting = await upsertProcess(acme.id, "Cutting", "CUT");
-  const framing = await upsertProcess(acme.id, "Framing", "FRM");
-  const assembly = await upsertProcess(acme.id, "Assembly", "ASM");
-  const glass = await upsertProcess(acme.id, "Glass", "GLS");
-  const finishing = await upsertProcess(acme.id, "Finishing", "FIN");
-  const cnc = await upsertProcess(acme.id, "CNC", "CNC");
+  const cutting = await upsertProcess(acme.id, "Cutting", "CUT", 250);
+  const framing = await upsertProcess(acme.id, "Framing", "FRM", 200);
+  const assembly = await upsertProcess(acme.id, "Assembly", "ASM", 150);
+  const glass = await upsertProcess(acme.id, "Glass", "GLS", 180);
+  const finishing = await upsertProcess(acme.id, "Finishing", "FIN", 120);
+  const cnc = await upsertProcess(acme.id, "CNC", "CNC", 100);
 
   async function replaceMapping(plantId: string, productId: string, processIds: string[]) {
     await prisma.plantProductProcessMapping.deleteMany({
@@ -210,7 +296,7 @@ async function main() {
   const admin = await prisma.user.findUniqueOrThrow({ where: { email: "admin.acme@example.com" } });
   let order = await prisma.productionOrder.findUnique({
     where: { organizationId_orderNumber: { organizationId: acme.id, orderNumber: "ABC-001" } },
-    include: { processes: true },
+    include: { processes: true, lines: true },
   });
   if (!order) {
     const orderDate = parseDateOnly("2026-08-30");
@@ -219,7 +305,11 @@ async function main() {
       include: { process: true },
       orderBy: { sequence: "asc" },
     });
-    const snapshot = buildOrderProcessSnapshot(mapping, 500);
+    const lineDefs = [
+      { quantity: 200, lineNumber: 1, thicknessCode: "30MM" },
+      { quantity: 300, lineNumber: 2, thicknessCode: "35MM" },
+    ];
+    const totalQuantity = lineDefs.reduce((sum, line) => sum + line.quantity, 0);
     const created = await prisma.productionOrder.create({
       data: {
         organizationId: acme.id,
@@ -228,7 +318,7 @@ async function main() {
         productId: door.id,
         createdByUserId: admin.id,
         orderNumber: "ABC-001",
-        quantity: 500,
+        quantity: totalQuantity,
         orderDate,
         startDateType: DateInputType.NONE,
         effectiveStartDate: resolveEffectiveStartDate({ orderDate, startDateType: "NONE" }),
@@ -240,48 +330,96 @@ async function main() {
           dueDateType: "DAYS_FROM_START",
           dueDays: 21,
         }),
-        remarks: "Seed order for the 500-door example.",
+        remarks: "Seed order with multi-line doors and optional thickness categories.",
       },
     });
-    await prisma.productionOrderProcess.createMany({
-      data: snapshot.map((step) => ({
-        organizationId: acme.id,
-        productionOrderId: created.id,
-        processId: step.processId,
-        processName: step.processName,
-        processCode: step.processCode,
-        sequence: step.sequence,
-        plannedQuantity: step.plannedQuantity,
-      })),
+    const thicknessOptions = await prisma.productCategoryOption.findMany({
+      where: { productCategoryId: thickness.id },
     });
+    for (const lineDef of lineDefs) {
+      const snapshot = buildOrderProcessSnapshot(mapping, lineDef.quantity);
+      const createdLine = await prisma.productionOrderLine.create({
+        data: {
+          organizationId: acme.id,
+          productionOrderId: created.id,
+          productId: door.id,
+          quantity: lineDef.quantity,
+          lineNumber: lineDef.lineNumber,
+        },
+      });
+      const option = thicknessOptions.find((row) => row.code === lineDef.thicknessCode);
+      if (option) {
+        const selection = await prisma.productionOrderLineCategorySelection.create({
+          data: {
+            organizationId: acme.id,
+            productionOrderLineId: createdLine.id,
+            productCategoryId: thickness.id,
+          },
+        });
+        await prisma.productionOrderLineCategoryOption.create({
+          data: { selectionId: selection.id, categoryOptionId: option.id },
+        });
+      }
+      await prisma.productionOrderProcess.createMany({
+        data: snapshot.map((step) => ({
+          organizationId: acme.id,
+          productionOrderId: created.id,
+          productionOrderLineId: createdLine.id,
+          processId: step.processId,
+          processName: step.processName,
+          processCode: step.processCode,
+          sequence: step.sequence,
+          plannedQuantity: step.plannedQuantity,
+        })),
+      });
+    }
     order = await prisma.productionOrder.findUniqueOrThrow({
       where: { id: created.id },
-      include: { processes: true },
+      include: { processes: true, lines: true },
+    });
+  } else if (order.lines.length === 0) {
+    const createdLine = await prisma.productionOrderLine.create({
+      data: {
+        organizationId: acme.id,
+        productionOrderId: order.id,
+        productId: order.productId,
+        quantity: order.quantity,
+        lineNumber: 1,
+      },
+    });
+    await prisma.productionOrderProcess.updateMany({
+      where: { productionOrderId: order.id },
+      data: { productionOrderLineId: createdLine.id },
+    });
+    order = await prisma.productionOrder.findUniqueOrThrow({
+      where: { id: order.id },
+      include: { processes: true, lines: true },
     });
   }
 
-  const cuttingStep = order.processes.find((step) => step.processCode === "CUT");
-  const framingStep = order.processes.find((step) => step.processCode === "FRM");
   const existingEntries = await prisma.productionEntry.count({ where: { productionOrderId: order.id } });
-  if (existingEntries === 0 && cuttingStep && framingStep) {
-    await prisma.productionEntry.createMany({
-      data: [
+  if (existingEntries === 0) {
+    const cuttingByLine = new Map(
+      order.processes.filter((step) => step.processCode === "CUT").map((step) => [step.productionOrderLineId, step]),
+    );
+    const framingByLine = new Map(
+      order.processes.filter((step) => step.processCode === "FRM").map((step) => [step.productionOrderLineId, step]),
+    );
+    const entryRows = [];
+    for (const line of order.lines) {
+      const cuttingStep = cuttingByLine.get(line.id);
+      const framingStep = framingByLine.get(line.id);
+      if (!cuttingStep || !framingStep) {
+        continue;
+      }
+      entryRows.push(
         {
           organizationId: acme.id,
           plantId: mumbai.id,
           productionOrderId: order.id,
           orderProcessId: cuttingStep.id,
           entryDate: parseDateOnly("2026-08-30"),
-          quantity: 200,
-          createdByUserId: admin.id,
-        },
-        {
-          organizationId: acme.id,
-          plantId: mumbai.id,
-          productionOrderId: order.id,
-          orderProcessId: cuttingStep.id,
-          entryDate: parseDateOnly("2026-08-31"),
-          quantity: 300,
+          quantity: line.quantity,
           createdByUserId: admin.id,
         },
         {
@@ -290,15 +428,18 @@ async function main() {
           productionOrderId: order.id,
           orderProcessId: framingStep.id,
           entryDate: parseDateOnly("2026-08-31"),
-          quantity: 150,
+          quantity: Math.min(150, line.quantity),
           createdByUserId: admin.id,
         },
-      ],
-    });
-    await prisma.productionOrder.update({
-      where: { id: order.id },
-      data: { lifecycleStatus: "IN_PRODUCTION" },
-    });
+      );
+    }
+    if (entryRows.length > 0) {
+      await prisma.productionEntry.createMany({ data: entryRows });
+      await prisma.productionOrder.update({
+        where: { id: order.id },
+        data: { lifecycleStatus: "IN_PRODUCTION" },
+      });
+    }
   }
 
   console.log("Seed complete.");

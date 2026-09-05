@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { parseOrganizationSettings } from "@/lib/organization-settings";
-import { evaluateOrder, type OrderEvaluation } from "@/lib/production/engine";
+import type { OrderEvaluation } from "@/lib/production/engine";
+import { evaluateOrderLines } from "@/lib/production/evaluate-lines";
 
 export async function evaluateOrganizationOrders(input: {
   organizationId: string;
@@ -16,6 +17,14 @@ export async function evaluateOrganizationOrders(input: {
       processName: string;
       processCode: string;
       plannedQuantity: number;
+      expectedDays?: number | null;
+      processId?: string | null;
+      productionOrderLineId?: string | null;
+    }[];
+    lines?: {
+      id: string;
+      quantity: number;
+      product?: { name: string } | null;
     }[];
   }[];
   asOfDate: Date;
@@ -30,6 +39,22 @@ export async function evaluateOrganizationOrders(input: {
   if (ids.length === 0) {
     return result;
   }
+
+  const masterProcessIds = [
+    ...new Set(
+      input.orders.flatMap((order) =>
+        order.processes.map((process) => process.processId).filter((id): id is string => Boolean(id)),
+      ),
+    ),
+  ];
+  const masterRates =
+    masterProcessIds.length > 0
+      ? await prisma.process.findMany({
+          where: { organizationId: input.organizationId, id: { in: masterProcessIds } },
+          select: { id: true, unitsPerDay: true },
+        })
+      : [];
+  const unitsByProcessId = new Map(masterRates.map((row) => [row.id, row.unitsPerDay]));
 
   const grouped = await prisma.productionEntry.groupBy({
     by: ["productionOrderId", "orderProcessId"],
@@ -54,14 +79,51 @@ export async function evaluateOrganizationOrders(input: {
   }
 
   for (const order of input.orders) {
+    const processesByLine = new Map<string, typeof order.processes>();
+    for (const process of order.processes) {
+      const lineId = process.productionOrderLineId ?? "__legacy__";
+      const list = processesByLine.get(lineId) ?? [];
+      list.push(process);
+      processesByLine.set(lineId, list);
+    }
+
+    const lineMeta = new Map((order.lines ?? []).map((line) => [line.id, line]));
+    const lines =
+      processesByLine.size > 0
+        ? [...processesByLine.entries()].map(([lineId, processes]) => {
+            const meta = lineMeta.get(lineId);
+            const label = meta?.product?.name;
+            return {
+              id: lineId,
+              quantity: meta?.quantity ?? processes[0]?.plannedQuantity ?? order.quantity,
+              label,
+              processes: processes.map((process) => ({
+                id: process.id,
+                sequence: process.sequence,
+                processName: process.processName,
+                processCode: process.processCode,
+                plannedQuantity: process.plannedQuantity,
+                expectedDays: process.expectedDays ?? null,
+                unitsPerDay: process.processId ? (unitsByProcessId.get(process.processId) ?? null) : null,
+              })),
+            };
+          })
+        : [
+            {
+              id: "__empty__",
+              quantity: order.quantity,
+              processes: [],
+            },
+          ];
+
     result.set(
       order.id,
-      evaluateOrder({
+      evaluateOrderLines({
         orderQuantity: order.quantity,
         effectiveStartDate: order.effectiveStartDate,
         resolvedDueDate: order.resolvedDueDate,
         lifecycleStatus: order.lifecycleStatus,
-        processes: order.processes,
+        lines,
         entries: entriesByOrder.get(order.id) ?? [],
         firstEntryDate: firstByOrder.get(order.id) ?? null,
         asOfDate: input.asOfDate,

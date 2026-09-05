@@ -31,10 +31,16 @@ model Organization {
   userPlantAccess UserPlantAccess[]
   clients Client[]
   products Product[]
+  productCategories ProductCategory[]
+  productCategoryAssignments ProductCategoryAssignment[]
+  productCategoryOptions ProductCategoryOption[]
   processes Process[]
   processMappings PlantProductProcessMapping[]
   specialActivities SpecialActivity[]
   productionOrders ProductionOrder[]
+  productionOrderLines ProductionOrderLine[]
+  productionOrderLineCategorySelections ProductionOrderLineCategorySelection[]
+  productionOrderLineMaterials ProductionOrderLineMaterial[]
   orderProcesses ProductionOrderProcess[]
   orderSpecialActivities ProductionOrderSpecialActivity[]
   productionEntries ProductionEntry[]
@@ -137,24 +143,107 @@ model Product {
   organizationId String
   name           String
   code           String
+  /// Optional thickness / specification / other free-text details.
+  details        String?
   isActive       Boolean  @default(true)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   organization    Organization                  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  categoryAssignments ProductCategoryAssignment[]
   processMappings PlantProductProcessMapping[]
   productionOrders ProductionOrder[]
+  orderLines      ProductionOrderLine[]
 
   @@unique([organizationId, code])
   @@unique([organizationId, name])
   @@index([organizationId, isActive])
 }
+
+/// How a product category captures values on an order line.
+enum CategoryInputType {
+  OPEN_TEXT
+  DROPDOWN
+}
+
+/// For DROPDOWN categories: one option or many options may be selected.
+enum CategoryChoiceMode {
+  SINGLE
+  MULTI
+}
+
+/// Tenant-scoped product category master (e.g. FILLER, THICKNESS, SURFACE FINISH).
+/// Assigned to products; all category answers on orders are optional.
+model ProductCategory {
+  id             String            @id @default(cuid())
+  organizationId String
+  /// Stable external reference code.
+  code           String
+  name           String
+  inputType      CategoryInputType @default(OPEN_TEXT)
+  /// Required when inputType = DROPDOWN; null for OPEN_TEXT.
+  choiceMode     CategoryChoiceMode?
+  isActive       Boolean           @default(true)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  productAssignments ProductCategoryAssignment[]
+  /// Dropdown choices for this category (empty when OPEN_TEXT).
+  options        ProductCategoryOption[]
+  lineSelections ProductionOrderLineCategorySelection[]
+
+  @@unique([organizationId, code])
+  @@unique([organizationId, name])
+  @@index([organizationId, isActive])
+}
+
+/// A selectable value under a DROPDOWN product category (e.g. 30MM, PINE, Lipping Patti).
+model ProductCategoryOption {
+  id                String   @id @default(cuid())
+  organizationId    String
+  productCategoryId String
+  code              String
+  name              String
+  sortOrder         Int      @default(0)
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  productCategory ProductCategory @relation(fields: [productCategoryId], references: [id], onDelete: Cascade)
+  lineSelectionOptions ProductionOrderLineCategoryOption[]
+
+  @@unique([productCategoryId, code])
+  @@unique([productCategoryId, name])
+  @@index([organizationId, productCategoryId])
+  @@index([organizationId, isActive])
+}
+
+model ProductCategoryAssignment {
+  id                String   @id @default(cuid())
+  organizationId    String
+  productId         String
+  productCategoryId String
+  createdAt         DateTime @default(now())
+
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  product         Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productCategory ProductCategory @relation(fields: [productCategoryId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, productCategoryId])
+  @@index([organizationId, productId])
+  @@index([organizationId, productCategoryId])
+}
+
 model Process {
   id             String   @id @default(cuid())
   organizationId String
   name           String
   code           String
   description    String?
+  /// Planned units completable per calendar day for this process (master default).
+  unitsPerDay    Int?
   isActive       Boolean  @default(true)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -244,9 +333,11 @@ model ProductionOrder {
   organizationId     String
   plantId            String
   clientId           String
+  /// Denormalized primary product (first order line). Prefer lines for product detail.
   productId          String
   createdByUserId    String
   orderNumber        String
+  /// Denormalized total = sum of ProductionOrderLine.quantity. Not manually entered.
   quantity           Int
   orderDate          DateTime             @db.Date
   startDateType      DateInputType        @default(NONE)
@@ -270,6 +361,7 @@ model ProductionOrder {
   client       Client                   @relation(fields: [clientId], references: [id], onDelete: Restrict)
   product      Product                  @relation(fields: [productId], references: [id], onDelete: Restrict)
   createdBy    User                     @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  lines        ProductionOrderLine[]
   processes    ProductionOrderProcess[]
   requestedSpecialActivities ProductionOrderSpecialActivity[]
   productionEntries ProductionEntry[]
@@ -282,6 +374,94 @@ model ProductionOrder {
   @@index([organizationId, lifecycleStatus])
   @@index([organizationId, effectiveStartDate])
   @@index([organizationId, resolvedDueDate])
+}
+
+/// One product + quantity row on a production order. Category answers and materials hang off the line.
+model ProductionOrderLine {
+  id                String   @id @default(cuid())
+  organizationId    String
+  productionOrderId String
+  productId         String
+  quantity          Int
+  /// Optional free-text notes for this line.
+  remarks           String?
+  lineNumber        Int
+  createdAt         DateTime @default(now())
+
+  organization    Organization             @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  productionOrder ProductionOrder          @relation(fields: [productionOrderId], references: [id], onDelete: Cascade)
+  product         Product                  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  processes       ProductionOrderProcess[]
+  categorySelections ProductionOrderLineCategorySelection[]
+  materials       ProductionOrderLineMaterial[]
+
+  @@unique([productionOrderId, lineNumber])
+  @@index([organizationId, productionOrderId])
+  @@index([organizationId, productId])
+}
+
+/// Optional answer for one product category on an order line (open text and/or selected options).
+model ProductionOrderLineCategorySelection {
+  id                    String   @id @default(cuid())
+  organizationId        String
+  productionOrderLineId String
+  productCategoryId     String
+  /// Used when the category inputType is OPEN_TEXT.
+  textValue             String?
+  createdAt             DateTime @default(now())
+
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  orderLine       ProductionOrderLine @relation(fields: [productionOrderLineId], references: [id], onDelete: Cascade)
+  productCategory ProductCategory @relation(fields: [productCategoryId], references: [id], onDelete: Restrict)
+  selectedOptions ProductionOrderLineCategoryOption[]
+
+  @@unique([productionOrderLineId, productCategoryId])
+  @@index([organizationId, productionOrderLineId])
+}
+
+model ProductionOrderLineCategoryOption {
+  id              String @id @default(cuid())
+  selectionId     String
+  categoryOptionId String
+
+  selection      ProductionOrderLineCategorySelection @relation(fields: [selectionId], references: [id], onDelete: Cascade)
+  categoryOption ProductCategoryOption @relation(fields: [categoryOptionId], references: [id], onDelete: Restrict)
+
+  @@unique([selectionId, categoryOptionId])
+  @@index([categoryOptionId])
+}
+
+/// Order-line material requirement (customer-supplied / order-specific; no shared stock).
+model ProductionOrderLineMaterial {
+  id                    String   @id @default(cuid())
+  organizationId        String
+  productionOrderLineId String
+  name                  String
+  /// Qty of material needed to make 1 unit of the line product.
+  quantityPerUnit       Int
+  /// Qty received for this order line.
+  quantityReceived      Int      @default(0)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  orderLine    ProductionOrderLine @relation(fields: [productionOrderLineId], references: [id], onDelete: Cascade)
+  stages       ProductionOrderLineMaterialStage[]
+
+  @@index([organizationId, productionOrderLineId])
+}
+
+/// Links a line material to one or more order-line process snapshot stages where it is consumed.
+model ProductionOrderLineMaterialStage {
+  id               String @id @default(cuid())
+  materialId       String
+  orderProcessId   String
+
+  material     ProductionOrderLineMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  orderProcess ProductionOrderProcess @relation(fields: [orderProcessId], references: [id], onDelete: Cascade)
+
+  @@unique([materialId, orderProcessId])
+  @@index([orderProcessId])
 }
 
 /// Order-requested special/auxiliary activities. Not part of the main process sequence.
@@ -300,26 +480,32 @@ model ProductionOrderSpecialActivity {
   @@index([organizationId, productionOrderId])
 }
 
-/// Order-specific copy of the plant/product process mapping at creation time.
+/// Order-line-specific copy of the plant/product process mapping at creation time.
 model ProductionOrderProcess {
-  id                String   @id @default(cuid())
-  organizationId    String
-  productionOrderId String
-  processId         String?
-  processName       String
-  processCode       String
-  sequence          Int
-  plannedQuantity   Int
-  createdAt         DateTime @default(now())
+  id                    String   @id @default(cuid())
+  organizationId        String
+  productionOrderId     String
+  productionOrderLineId String
+  processId             String?
+  processName           String
+  processCode           String
+  sequence              Int
+  plannedQuantity       Int
+  /// Planned calendar days to complete this stage for the line quantity (order snapshot).
+  expectedDays          Int?
+  createdAt             DateTime @default(now())
 
-  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  productionOrder ProductionOrder @relation(fields: [productionOrderId], references: [id], onDelete: Cascade)
-  process         Process?        @relation(fields: [processId], references: [id], onDelete: SetNull)
+  organization    Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  productionOrder ProductionOrder     @relation(fields: [productionOrderId], references: [id], onDelete: Cascade)
+  orderLine       ProductionOrderLine @relation(fields: [productionOrderLineId], references: [id], onDelete: Cascade)
+  process         Process?            @relation(fields: [processId], references: [id], onDelete: SetNull)
   productionEntries ProductionEntry[]
   specialActivityEntries SpecialActivityEntry[]
+  materialStages  ProductionOrderLineMaterialStage[]
 
-  @@unique([productionOrderId, sequence])
+  @@unique([productionOrderLineId, sequence])
   @@index([organizationId, productionOrderId])
+  @@index([organizationId, productionOrderLineId])
 }
 
 /// Incremental quantity completed on a date. Never a cumulative total.

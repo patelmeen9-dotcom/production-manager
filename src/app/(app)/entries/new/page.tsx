@@ -3,12 +3,19 @@ import { requireTenantContext } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { loadPlantScope } from "@/lib/plants/access";
 import { canRecordProduction, plantIdsForQuery } from "@/lib/plants/scope";
+import { buildEntryLinesByOrder } from "@/lib/production/entry-form-data";
 import { ProductionEntryForm } from "@/components/production/production-entry-form";
+import { SavedBanner } from "@/components/ui/saved-banner";
 
 export const metadata: Metadata = { title: "Production entry" };
 
-export default async function NewEntryPage() {
+export default async function NewEntryPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const context = await requireTenantContext();
+  const params = await searchParams;
   if (!canRecordProduction(context.role)) {
     return <p className="text-sm text-slate-400">Viewers cannot record production.</p>;
   }
@@ -25,30 +32,36 @@ export default async function NewEntryPage() {
       ...(plantFilter ? { plantId: { in: plantFilter } } : {}),
     },
     include: {
-      processes: { orderBy: { sequence: "asc" } },
+      lines: {
+        include: {
+          product: { select: { name: true } },
+          categorySelections: {
+            include: {
+              productCategory: { select: { name: true } },
+              selectedOptions: { include: { categoryOption: { select: { name: true } } } },
+            },
+          },
+          processes: {
+            select: { id: true, sequence: true, processName: true },
+            orderBy: { sequence: "asc" },
+          },
+        },
+        orderBy: { lineNumber: "asc" },
+      },
       requestedSpecialActivities: { include: { specialActivity: true } },
     },
     orderBy: { createdAt: "desc" },
     take: 100,
   });
 
-  const processesByOrder = Object.fromEntries(
-    orders.map((order) => [
-      order.id,
-      order.processes.map((process) => ({
-        id: process.id,
-        label: `${process.sequence}. ${process.processName}`,
-      })),
-    ]),
-  );
-
-  const specialActivitiesByOrder = Object.fromEntries(
+  const linesByOrder = buildEntryLinesByOrder(orders);
+  const activitiesByOrder = Object.fromEntries(
     orders.map((order) => [
       order.id,
       order.specialActivitiesRequested
         ? order.requestedSpecialActivities.map((row) => ({
-            id: row.specialActivity.id,
-            name: row.specialActivity.name,
+            value: `activity:${row.specialActivity.id}`,
+            label: row.specialActivity.name,
           }))
         : [],
     ]),
@@ -57,10 +70,12 @@ export default async function NewEntryPage() {
   return (
     <main className="mx-auto max-w-5xl space-y-4">
       <h1 className="text-2xl font-semibold text-white">Daily production entry</h1>
+      <SavedBanner message={params.saved} />
       <ProductionEntryForm
         orders={orders.map((order) => ({ id: order.id, orderNumber: order.orderNumber }))}
-        processesByOrder={processesByOrder}
-        specialActivitiesByOrder={specialActivitiesByOrder}
+        linesByOrder={linesByOrder}
+        activitiesByOrder={activitiesByOrder}
+        showBackToList
       />
     </main>
   );

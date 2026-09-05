@@ -31,13 +31,50 @@ export const clientSchema = z.object({
 export const productSchema = z.object({
   name: z.string().trim().min(1, "Product name is required.").max(160),
   code: z.string().trim().min(1, "Product code is required.").max(40),
+  details: z.string().trim().max(2000).optional().or(z.literal("")),
+  categoryIds: z.array(z.string().min(1)).default([]),
   isActive: z.boolean(),
 });
+
+export const productCategoryOptionSchema = z.object({
+  code: z.string().trim().min(1, "Option code is required.").max(40),
+  name: z.string().trim().min(1, "Option name is required.").max(160),
+  sortOrder: z.coerce.number().int().min(0).max(9999).default(0),
+  isActive: z.boolean().default(true),
+});
+
+export const productCategorySchema = z
+  .object({
+    code: z.string().trim().min(1, "Category code is required.").max(40),
+    name: z.string().trim().min(1, "Category name is required.").max(160),
+    inputType: z.enum(["OPEN_TEXT", "DROPDOWN"]),
+    choiceMode: z.enum(["SINGLE", "MULTI"]).optional().nullable(),
+    isActive: z.boolean(),
+    options: z.array(productCategoryOptionSchema).default([]),
+  })
+  .superRefine((value, ctx) => {
+    if (value.inputType === "DROPDOWN") {
+      if (!value.choiceMode) {
+        ctx.addIssue({ code: "custom", message: "Choice mode is required for dropdown categories.", path: ["choiceMode"] });
+      }
+      if (value.options.length === 0) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Add at least one category option for dropdown categories.",
+          path: ["options"],
+        });
+      }
+    }
+  });
 
 export const processSchema = z.object({
   name: z.string().trim().min(1, "Process name is required.").max(160),
   code: z.string().trim().min(1, "Process code is required.").max(40),
   description: z.string().trim().max(500).optional().or(z.literal("")),
+  unitsPerDay: z.union([
+    z.literal(""),
+    z.coerce.number().int().positive("Units per day must be greater than zero."),
+  ]).optional(),
   isActive: z.boolean(),
 });
 

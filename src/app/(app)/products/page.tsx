@@ -17,6 +17,11 @@ export default async function ProductsPage({
   const products = await prisma.product.findMany({
     where: { organizationId: context.organizationId },
     orderBy: { name: "asc" },
+    include: {
+      categoryAssignments: {
+        include: { productCategory: { select: { name: true } } },
+      },
+    },
   });
 
   return (
@@ -28,7 +33,16 @@ export default async function ProductsPage({
       items={products.map((product) => ({
         id: product.id,
         title: product.name,
-        subtitle: `${product.code} · ${product.isActive ? "Active" : "Inactive"}`,
+        subtitle: [
+          product.code,
+          product.details ? `Details: ${product.details}` : null,
+          product.categoryAssignments.length > 0
+            ? product.categoryAssignments.map((row) => row.productCategory.name).join(", ")
+            : "No categories",
+          product.isActive ? "Active" : "Inactive",
+        ]
+          .filter(Boolean)
+          .join(" · "),
         href: manage ? `/products/${product.id}/edit` : undefined,
       }))}
     />

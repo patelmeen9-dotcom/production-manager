@@ -28,7 +28,7 @@ export default async function ProcessesPage({
       items={processes.map((process) => ({
         id: process.id,
         title: process.name,
-        subtitle: `${process.code} · ${process.isActive ? "Active" : "Inactive"}`,
+        subtitle: `${process.code}${process.unitsPerDay != null ? ` · ${process.unitsPerDay}/day` : ""} · ${process.isActive ? "Active" : "Inactive"}`,
         href: manage ? `/processes/${process.id}/edit` : undefined,
       }))}
     />

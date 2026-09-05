@@ -1,20 +1,100 @@
 import { z } from "zod";
 
-export const productionOrderSchema = z.object({
-  clientId: z.string().min(1, "Client is required."),
-  orderNumber: z.string().trim().min(1, "Order number is required.").max(80),
-  plantId: z.string().min(1, "Plant is required."),
+export const orderLineCategorySelectionSchema = z.object({
+  productCategoryId: z.string().min(1),
+  textValue: z.string().trim().max(1000).optional().or(z.literal("")),
+  optionIds: z.array(z.string().min(1)).default([]),
+});
+
+export const orderLineMaterialSchema = z.object({
+  name: z.string().trim().min(1, "Material name is required.").max(160),
+  /** Qty needed to make 1 unit of the line product. Total needed = this × line quantity. */
+  quantityPerUnit: z.coerce.number().int().positive("Quantity per unit must be greater than zero."),
+  quantityReceived: z.coerce.number().int().min(0, "Received quantity cannot be negative."),
+  /** Process codes selected for this material (matched to the line process snapshot). */
+  processCodes: z.array(z.string().min(1)).min(1, "Select at least one process stage for the material."),
+});
+
+export const orderLineProcessSchema = z.object({
+  processId: z.string().min(1),
+  processCode: z.string().min(1),
+  processName: z.string().min(1),
+  sequence: z.coerce.number().int().positive(),
+  expectedDays: z.union([
+    z.literal(""),
+    z.coerce.number().int().positive("Expected days must be greater than zero."),
+  ]).optional(),
+});
+
+export const productionOrderLineSchema = z.object({
   productId: z.string().min(1, "Product is required."),
-  quantity: z.coerce.number().int().positive("Quantity must be greater than zero."),
-  orderDate: z.string().min(1, "Order date is required."),
-  startDateType: z.enum(["NONE", "FIXED_DATE", "DAYS_FROM_ORDER"]),
-  startDate: z.string().optional().or(z.literal("")),
-  startDays: z.string().optional().or(z.literal("")),
-  dueDateType: z.enum(["FIXED_DATE", "DAYS_FROM_ORDER", "DAYS_FROM_START"]),
-  dueDate: z.string().optional().or(z.literal("")),
-  dueDays: z.string().optional().or(z.literal("")),
-  priority: z.enum(["LOW", "NORMAL", "HIGH", "URGENT"]),
+  quantity: z.coerce.number().int().positive("Line quantity must be greater than zero."),
   remarks: z.string().trim().max(1000).optional().or(z.literal("")),
-  specialActivitiesRequested: z.boolean(),
-  specialActivityIds: z.array(z.string().min(1)).default([]),
+  categorySelections: z.array(orderLineCategorySelectionSchema).default([]),
+  processes: z.array(orderLineProcessSchema).min(1, "Each line needs at least one process stage."),
+  materials: z.array(orderLineMaterialSchema).default([]),
+});
+
+export const productionOrderSchema = z
+  .object({
+    clientId: z.string().min(1, "Client is required."),
+    orderNumber: z.string().trim().min(1, "Order number is required.").max(80),
+    plantId: z.string().min(1, "Plant is required."),
+    lines: z.array(productionOrderLineSchema).min(1, "Add at least one order line."),
+    orderDate: z.string().min(1, "Order date is required."),
+    startDateType: z.enum(["NONE", "FIXED_DATE", "DAYS_FROM_ORDER"]),
+    startDate: z.string().optional().or(z.literal("")),
+    startDays: z.string().optional().or(z.literal("")),
+    dueDateType: z.enum(["FIXED_DATE", "DAYS_FROM_ORDER", "DAYS_FROM_START"]),
+    dueDate: z.string().optional().or(z.literal("")),
+    dueDays: z.string().optional().or(z.literal("")),
+    priority: z.enum(["LOW", "NORMAL", "HIGH", "URGENT"]),
+    remarks: z.string().trim().max(1000).optional().or(z.literal("")),
+    specialActivitiesRequested: z.boolean(),
+    specialActivityIds: z.array(z.string().min(1)).default([]),
+  })
+  .superRefine((value, ctx) => {
+    // Allow multiple lines with the same product (different optional category answers).
+    for (const [index, line] of value.lines.entries()) {
+      const codes = new Set<string>();
+      for (const process of line.processes) {
+        if (codes.has(process.processCode)) {
+          ctx.addIssue({
+            code: "custom",
+            message: `Duplicate process on line ${index + 1}.`,
+            path: ["lines", index, "processes"],
+          });
+        }
+        codes.add(process.processCode);
+      }
+      for (const material of line.materials) {
+        for (const code of material.processCodes) {
+          if (!codes.has(code)) {
+            ctx.addIssue({
+              code: "custom",
+              message: `Material "${material.name}" references a process not on line ${index + 1}.`,
+              path: ["lines", index, "materials"],
+            });
+          }
+        }
+      }
+    }
+  });
+
+/** Safe edit: remarks + material received quantities only when production has started. */
+export const productionOrderSafeEditSchema = z.object({
+  remarks: z.string().trim().max(1000).optional().or(z.literal("")),
+  priority: z.enum(["LOW", "NORMAL", "HIGH", "URGENT"]),
+  lineRemarks: z.array(
+    z.object({
+      lineId: z.string().min(1),
+      remarks: z.string().trim().max(1000).optional().or(z.literal("")),
+    }),
+  ),
+  materials: z.array(
+    z.object({
+      materialId: z.string().min(1),
+      quantityReceived: z.coerce.number().int().min(0),
+    }),
+  ),
 });

@@ -149,6 +149,20 @@ export async function commitImportPayload(input: {
     const activities = await tx.specialActivity.findMany({ where: { organizationId: input.organizationId } });
     const activityId = (code: string) => activities.find((row) => normalizeCode(row.code) === code)?.id;
 
+    const generalCategory = await tx.productCategory.upsert({
+      where: {
+        organizationId_code: { organizationId: input.organizationId, code: "GENERAL" },
+      },
+      update: { isActive: true, inputType: "OPEN_TEXT", choiceMode: null },
+      create: {
+        organizationId: input.organizationId,
+        code: "GENERAL",
+        name: "General",
+        inputType: "OPEN_TEXT",
+        isActive: true,
+      },
+    });
+
     for (const row of input.payload.projects) {
       if (row.action === "skip") {
         continue;
@@ -234,12 +248,38 @@ export async function commitImportPayload(input: {
         },
       });
 
+      await tx.productCategoryAssignment.upsert({
+        where: {
+          productId_productCategoryId: {
+            productId: product,
+            productCategoryId: generalCategory.id,
+          },
+        },
+        update: {},
+        create: {
+          organizationId: input.organizationId,
+          productId: product,
+          productCategoryId: generalCategory.id,
+        },
+      });
+
+      const createdLine = await tx.productionOrderLine.create({
+        data: {
+          organizationId: input.organizationId,
+          productionOrderId: created.id,
+          productId: product,
+          quantity: row.quantity,
+          lineNumber: 1,
+        },
+      });
+
       await tx.productionOrderProcess.createMany({
         data: row.processCodes.map((code, index) => {
           const process = processes.find((item) => normalizeCode(item.code) === code);
           return {
             organizationId: input.organizationId,
             productionOrderId: created.id,
+            productionOrderLineId: createdLine.id,
             processId: process?.id ?? null,
             processName: process?.name ?? code,
             processCode: code,

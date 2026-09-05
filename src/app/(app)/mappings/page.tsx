@@ -57,8 +57,8 @@ export default async function MappingsPage({
       </div>
       <SavedBanner message={params.saved} />
       <p className="text-sm text-slate-400">
-        Each plant and product can have a different stage sequence. Changing a mapping does not rewrite historical
-        orders.
+        Mappings stay plant + product. Orders inherit this sequence and can add/remove/reorder stages per line at order
+        time. Changing a mapping does not rewrite historical orders.
       </p>
       {groups.size === 0 ? (
         <p className="rounded-lg border border-slate-800 p-4 text-sm text-slate-400">No mappings in the current plant scope.</p>

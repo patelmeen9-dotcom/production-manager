@@ -19,7 +19,7 @@ function plantFilter(plantIds: string[] | null) {
 
 const lastStageOnly = Prisma.sql`AND pop.sequence = (
   SELECT MAX(p2.sequence) FROM "ProductionOrderProcess" p2
-  WHERE p2."productionOrderId" = pop."productionOrderId"
+  WHERE p2."productionOrderLineId" = pop."productionOrderLineId"
 )`;
 
 type ScopeInput = {
@@ -51,23 +51,24 @@ export async function productionByClientProduct(
   >`
     SELECT o."clientId" AS "clientId",
            c.name AS "clientName",
-           o."productId" AS "productId",
+           ol."productId" AS "productId",
            p.name AS "productName",
            COALESCE(SUM(e.quantity), 0)::int AS quantity
     FROM "ProductionEntry" e
     INNER JOIN "ProductionOrder" o ON o.id = e."productionOrderId"
     INNER JOIN "Client" c ON c.id = o."clientId"
-    INNER JOIN "Product" p ON p.id = o."productId"
     INNER JOIN "ProductionOrderProcess" pop ON pop.id = e."orderProcessId"
+    INNER JOIN "ProductionOrderLine" ol ON ol.id = pop."productionOrderLineId"
+    INNER JOIN "Product" p ON p.id = ol."productId"
     WHERE e."organizationId" = ${input.organizationId}
       AND e."entryDate" >= ${input.from}
       AND e."entryDate" <= ${input.to}
       ${lastStageOnly}
       ${plantFilter(input.plantIds)}
       ${input.clientId ? Prisma.sql`AND o."clientId" = ${input.clientId}` : Prisma.empty}
-      ${input.productId ? Prisma.sql`AND o."productId" = ${input.productId}` : Prisma.empty}
+      ${input.productId ? Prisma.sql`AND ol."productId" = ${input.productId}` : Prisma.empty}
       ${input.orderId ? Prisma.sql`AND e."productionOrderId" = ${input.orderId}` : Prisma.empty}
-    GROUP BY o."clientId", c.name, o."productId", p.name
+    GROUP BY o."clientId", c.name, ol."productId", p.name
     ORDER BY c.name, p.name
   `;
 
@@ -101,7 +102,10 @@ export async function productionByProcess(
       AND e."entryDate" <= ${input.to}
       ${plantFilter(input.plantIds)}
       ${input.clientId ? Prisma.sql`AND o."clientId" = ${input.clientId}` : Prisma.empty}
-      ${input.productId ? Prisma.sql`AND o."productId" = ${input.productId}` : Prisma.empty}
+      ${input.productId ? Prisma.sql`AND EXISTS (
+        SELECT 1 FROM "ProductionOrderLine" ol
+        WHERE ol."productionOrderId" = o.id AND ol."productId" = ${input.productId}
+      )` : Prisma.empty}
       ${input.orderId ? Prisma.sql`AND e."productionOrderId" = ${input.orderId}` : Prisma.empty}
       ${input.processId ? Prisma.sql`AND pop."processId" = ${input.processId}` : Prisma.empty}
     GROUP BY pop."processCode", pop."processName"
@@ -158,14 +162,15 @@ export async function productionByClientOrderProcess(input: ScopeInput): Promise
     FROM "ProductionEntry" e
     INNER JOIN "ProductionOrder" o ON o.id = e."productionOrderId"
     INNER JOIN "Client" c ON c.id = o."clientId"
-    INNER JOIN "Product" p ON p.id = o."productId"
     INNER JOIN "ProductionOrderProcess" pop ON pop.id = e."orderProcessId"
+    INNER JOIN "ProductionOrderLine" ol ON ol.id = pop."productionOrderLineId"
+    INNER JOIN "Product" p ON p.id = ol."productId"
     WHERE e."organizationId" = ${input.organizationId}
       AND e."entryDate" >= ${input.from}
       AND e."entryDate" <= ${input.to}
       ${plantFilter(input.plantIds)}
       ${input.clientId ? Prisma.sql`AND o."clientId" = ${input.clientId}` : Prisma.empty}
-      ${input.productId ? Prisma.sql`AND o."productId" = ${input.productId}` : Prisma.empty}
+      ${input.productId ? Prisma.sql`AND ol."productId" = ${input.productId}` : Prisma.empty}
       ${input.orderId ? Prisma.sql`AND e."productionOrderId" = ${input.orderId}` : Prisma.empty}
       ${input.processId ? Prisma.sql`AND pop."processId" = ${input.processId}` : Prisma.empty}
     GROUP BY o."clientId", c.name, o.id, o."orderNumber", p.name,

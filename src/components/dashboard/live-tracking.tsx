@@ -3,8 +3,33 @@
 import { useState } from "react";
 import Link from "next/link";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { displayStatusLabel, type DisplayStatus } from "@/lib/production/engine";
-import type { StageProgressPoint } from "@/lib/dashboard/stage-progress";
+import {
+  orderTowerStatusLabel,
+  processTowerStatusLabel,
+  type OrderTowerStatus,
+  type ProcessTowerStatus,
+} from "@/lib/dashboard/control-tower";
+
+export type LiveProcessRow = {
+  processName: string;
+  processCode: string;
+  cumulative: number;
+  required: number;
+  remaining: number;
+  sitting: number;
+  startDate: string | null;
+  expectedEnd: string | null;
+  actualEnd: string | null;
+  status: ProcessTowerStatus;
+};
+
+export type LiveLineRow = {
+  lineId: string;
+  productName: string;
+  quantity: number;
+  progressPercent: number;
+  processes: LiveProcessRow[];
+};
 
 export type LiveOrderRow = {
   id: string;
@@ -20,20 +45,29 @@ export type LiveOrderRow = {
   dueDate: string;
   daysToDue: number;
   expectedCompletion: string | null;
-  status: DisplayStatus;
-  stages: StageProgressPoint[];
+  status: OrderTowerStatus;
+  materialRisk: boolean;
+  lines: LiveLineRow[];
 };
 
-const STATUS_STYLE: Record<DisplayStatus, string> = {
-  ON_TIME: "bg-on-time-bg text-on-time",
-  GETTING_DELAYED: "bg-warn-bg text-warn",
+const ORDER_STATUS_STYLE: Record<OrderTowerStatus, string> = {
+  IN_PRODUCTION: "bg-on-time-bg text-on-time",
+  AT_RISK: "bg-warn-bg text-warn",
   DELAYED: "bg-delayed-bg text-delayed",
   NOT_STARTED: "bg-accent-bg text-ink-soft",
-  START_WARNING: "bg-warn-bg text-warn",
-  START_DELAYED: "bg-delayed-bg text-delayed",
   COMPLETED: "bg-accent-bg text-ink-soft",
   CANCELLED: "bg-panel-muted text-ink-faint",
   ON_HOLD: "bg-panel-muted text-ink-faint",
+};
+
+const PROCESS_STATUS_STYLE: Record<ProcessTowerStatus, string> = {
+  ON_TRACK: "text-on-time",
+  GETTING_DELAYED: "text-warn",
+  DELAYED: "text-delayed",
+  COMPLETED: "text-ink-soft",
+  COMPLETED_LATE: "text-warn",
+  NOT_STARTED: "text-ink-soft",
+  NOT_APPLICABLE: "text-ink-faint",
 };
 
 function DueLabel({ days }: { days: number }) {
@@ -46,24 +80,42 @@ function DueLabel({ days }: { days: number }) {
   return <span className="font-mono text-ink">{days}d left</span>;
 }
 
-function StageBars({ stages, orderQty }: { stages: StageProgressPoint[]; orderQty: number }) {
+function ProgressBar({ value, max }: { value: number; max: number }) {
+  const pct = max === 0 ? 0 : Math.min(100, (value / max) * 100);
   return (
-    <div className="space-y-2">
-      {stages.map((stage) => {
-        const pct = orderQty === 0 ? 0 : Math.min(100, (stage.cumulative / orderQty) * 100);
-        return (
-          <div key={stage.processCode} className="flex items-center gap-3">
-            <div className="w-28 shrink-0 text-xs text-ink-soft">{stage.processName}</div>
-            <div className="h-2 flex-1 overflow-hidden rounded-sm bg-line">
-              <div className="h-full rounded-sm bg-on-time" style={{ width: `${pct}%` }} />
-            </div>
-            <div className="w-28 shrink-0 font-mono text-[11px] text-ink-soft">
-              {stage.cumulative}/{orderQty}
-              {stage.sitting > 0 ? ` · ${stage.sitting} waiting` : ""}
-            </div>
-          </div>
-        );
-      })}
+    <div className="h-2 flex-1 overflow-hidden rounded-sm bg-line">
+      <div className="h-full rounded-sm bg-on-time" style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+function ProcessDetail({ process }: { process: LiveProcessRow }) {
+  if (process.status === "NOT_APPLICABLE") {
+    return (
+      <div className="rounded border border-line px-3 py-2 text-[12px] text-ink-faint">
+        {process.processName} — Not Applicable (skipped)
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-1.5 rounded border border-line px-3 py-2">
+      <div className="flex items-center gap-3">
+        <div className="w-28 shrink-0 text-xs font-medium text-ink">{process.processName}</div>
+        <ProgressBar value={process.cumulative} max={process.required} />
+        <div className="w-24 shrink-0 font-mono text-[11px] text-ink-soft">
+          {process.cumulative}/{process.required}
+        </div>
+        <span className={`shrink-0 text-[11.5px] font-semibold ${PROCESS_STATUS_STYLE[process.status]}`}>
+          {processTowerStatusLabel(process.status)}
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-x-5 gap-y-1 pl-0 text-[11px] text-ink-soft sm:pl-[7.5rem]">
+        <span>Start: {process.startDate ?? "—"}</span>
+        <span>Expected End: {process.expectedEnd ?? "—"}</span>
+        <span>Actual End: {process.actualEnd ?? "—"}</span>
+        <span>Remaining: {process.remaining}</span>
+        {process.sitting > 0 ? <span>Waiting: {process.sitting}</span> : null}
+      </div>
     </div>
   );
 }
@@ -78,7 +130,7 @@ export function LiveTrackingTable(props: { rows: LiveOrderRow[] }) {
   return (
     <div className="overflow-x-auto">
       <div className="min-w-[980px]">
-        <div className="grid grid-cols-[20px_110px_1.2fr_1fr_80px_120px_90px_140px] gap-3 border-b border-line px-3.5 py-2 text-[10.5px] font-semibold tracking-wide text-ink-soft">
+        <div className="grid grid-cols-[20px_110px_1.2fr_1fr_80px_120px_90px_160px] gap-3 border-b border-line px-3.5 py-2 text-[10.5px] font-semibold tracking-wide text-ink-soft">
           <span />
           <span>Order</span>
           <span>Client</span>
@@ -90,12 +142,12 @@ export function LiveTrackingTable(props: { rows: LiveOrderRow[] }) {
         </div>
         {props.rows.map((row) => {
           const expanded = expandedId === row.id;
-          const flagged = row.status === "DELAYED" || row.status === "START_DELAYED" || row.status === "GETTING_DELAYED" || row.status === "START_WARNING";
+          const flagged = row.status === "DELAYED" || row.status === "AT_RISK" || row.materialRisk;
           return (
             <div key={row.id} className={`border-b border-line ${flagged ? "bg-delayed-bg/40" : ""}`}>
               <button
                 type="button"
-                className="grid w-full grid-cols-[20px_110px_1.2fr_1fr_80px_120px_90px_140px] items-center gap-3 px-3.5 py-2.5 text-left text-[13px] hover:bg-panel-muted"
+                className="grid w-full grid-cols-[20px_110px_1.2fr_1fr_80px_120px_90px_160px] items-center gap-3 px-3.5 py-2.5 text-left text-[13px] hover:bg-panel-muted"
                 onClick={() => setExpandedId(expanded ? null : row.id)}
               >
                 <span className="text-ink-soft">
@@ -118,12 +170,19 @@ export function LiveTrackingTable(props: { rows: LiveOrderRow[] }) {
                   </div>
                 </span>
                 <DueLabel days={row.daysToDue} />
-                <span className={`inline-flex w-fit rounded px-2 py-0.5 text-[11.5px] font-semibold ${STATUS_STYLE[row.status]}`}>
-                  {displayStatusLabel(row.status)}
+                <span className="flex flex-col items-start gap-1">
+                  <span
+                    className={`inline-flex w-fit rounded px-2 py-0.5 text-[11.5px] font-semibold ${ORDER_STATUS_STYLE[row.status]}`}
+                  >
+                    {orderTowerStatusLabel(row.status)}
+                  </span>
+                  {row.materialRisk ? (
+                    <span className="text-[10.5px] font-medium text-warn">Material risk</span>
+                  ) : null}
                 </span>
               </button>
               {expanded ? (
-                <div className="space-y-3 bg-panel-muted px-3.5 pb-4 pl-11 pt-1">
+                <div className="space-y-4 bg-panel-muted px-3.5 pb-4 pl-11 pt-1">
                   <div className="flex flex-wrap gap-x-8 gap-y-1 text-[11.5px] text-ink-soft">
                     <span>
                       <span className="font-semibold text-ink">Plant: </span>
@@ -134,11 +193,11 @@ export function LiveTrackingTable(props: { rows: LiveOrderRow[] }) {
                       {row.dueDate}
                     </span>
                     <span>
-                      <span className="font-semibold text-ink">Stage: </span>
+                      <span className="font-semibold text-ink">Current process: </span>
                       {row.currentStageName ?? "—"}
                     </span>
                     <span>
-                      <span className="font-semibold text-ink">Expected: </span>
+                      <span className="font-semibold text-ink">Projected completion: </span>
                       {row.expectedCompletion ?? "Not enough rate data"}
                     </span>
                     <span>
@@ -146,10 +205,18 @@ export function LiveTrackingTable(props: { rows: LiveOrderRow[] }) {
                       {row.completedQuantity} / {row.remainingQuantity}
                     </span>
                   </div>
-                  <div>
-                    <p className="mb-2 text-xs font-semibold text-ink">Units completed by process</p>
-                    <StageBars stages={row.stages} orderQty={row.quantity} />
-                  </div>
+                  {row.lines.map((line) => (
+                    <div key={line.lineId} className="space-y-2">
+                      <p className="text-xs font-semibold text-ink">
+                        {line.productName} · qty {line.quantity} · {line.progressPercent.toFixed(0)}% finished goods
+                      </p>
+                      <div className="space-y-2">
+                        {line.processes.map((process) => (
+                          <ProcessDetail key={`${line.lineId}-${process.processCode}`} process={process} />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               ) : null}
             </div>

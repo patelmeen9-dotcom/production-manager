@@ -170,20 +170,20 @@ async function main() {
   // Processes — fixed sequence confirmed: Frame -> Beat -> Hot Press -> Rough Cutting
   // -> Laminate/HDF Cutting -> Repressing.
   // -------------------------------------------------------------------------
-  async function upsertProcess(name: string, code: string) {
+  async function upsertProcess(name: string, code: string, unitsPerDay?: number) {
     return prisma.process.upsert({
       where: { organizationId_code: { organizationId: org.id, code } },
-      update: { name, isActive: true },
-      create: { organizationId: org.id, name, code, isActive: true },
+      update: { name, isActive: true, unitsPerDay: unitsPerDay ?? null },
+      create: { organizationId: org.id, name, code, isActive: true, unitsPerDay: unitsPerDay ?? null },
     });
   }
 
-  const frame = await upsertProcess("Frame", "FRAME");
-  const beat = await upsertProcess("Beat", "BEAT");
-  const hotPress = await upsertProcess("Hot Press", "HOT-PRESS");
-  const roughCutting = await upsertProcess("Rough Cutting", "ROUGH-CUT");
-  const laminate = await upsertProcess("Laminate / HDF Cutting", "LAMINATE");
-  const repressing = await upsertProcess("Repressing", "REPRESSING");
+  const frame = await upsertProcess("Frame", "FRAME", 80);
+  const beat = await upsertProcess("Beat", "BEAT", 100);
+  const hotPress = await upsertProcess("Hot Press", "HOT-PRESS", 60);
+  const roughCutting = await upsertProcess("Rough Cutting", "ROUGH-CUT", 120);
+  const laminate = await upsertProcess("Laminate / HDF Cutting", "LAMINATE", 90);
+  const repressing = await upsertProcess("Repressing", "REPRESSING", 70);
 
   async function replaceMapping(processIds: string[]) {
     await prisma.plantProductProcessMapping.deleteMany({
@@ -537,6 +537,23 @@ async function main() {
     });
     const snapshot = buildOrderProcessSnapshot(mapping, def.quantity);
 
+    const generalCategory = await prisma.productCategory.upsert({
+      where: { organizationId_code: { organizationId: org.id, code: "GENERAL" } },
+      update: { isActive: true, inputType: "OPEN_TEXT", choiceMode: null },
+      create: { organizationId: org.id, code: "GENERAL", name: "General", inputType: "OPEN_TEXT", isActive: true },
+    });
+    await prisma.productCategoryAssignment.upsert({
+      where: {
+        productId_productCategoryId: { productId: door.id, productCategoryId: generalCategory.id },
+      },
+      update: {},
+      create: {
+        organizationId: org.id,
+        productId: door.id,
+        productCategoryId: generalCategory.id,
+      },
+    });
+
     const created = await prisma.productionOrder.create({
       data: {
         organizationId: org.id,
@@ -557,10 +574,21 @@ async function main() {
       },
     });
 
+    const createdLine = await prisma.productionOrderLine.create({
+      data: {
+        organizationId: org.id,
+        productionOrderId: created.id,
+        productId: door.id,
+        quantity: def.quantity,
+        lineNumber: 1,
+      },
+    });
+
     await prisma.productionOrderProcess.createMany({
       data: snapshot.map((step) => ({
         organizationId: org.id,
         productionOrderId: created.id,
+        productionOrderLineId: createdLine.id,
         processId: step.processId,
         processName: step.processName,
         processCode: step.processCode,

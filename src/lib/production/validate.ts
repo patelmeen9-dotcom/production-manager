@@ -6,6 +6,10 @@ export type ProcessSnapshot = {
   processName: string;
   processCode: string;
   plannedQuantity: number;
+  /** Planned days to complete this stage; null/undefined = use due-date/rate timing only. */
+  expectedDays?: number | null;
+  /** Planned units completable per day; used to derive stage duration when set. */
+  unitsPerDay?: number | null;
 };
 
 export type IncrementalEntry = {

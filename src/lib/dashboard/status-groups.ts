@@ -1,8 +1,26 @@
 import type { DisplayStatus } from "@/lib/production/engine";
+import type { OrderTowerStatus } from "@/lib/dashboard/control-tower";
 
-export type StatusGroup = "delayed" | "getting_delayed" | "on_time" | "not_started" | "completed" | "total";
+export type StatusGroup =
+  | "delayed"
+  | "getting_delayed"
+  | "in_production"
+  | "on_time"
+  | "not_started"
+  | "completed"
+  | "total";
 
-export const STATUS_GROUP_STATUSES: Record<Exclude<StatusGroup, "total">, DisplayStatus[]> = {
+/** Maps Control Tower order statuses into filterable KPI groups. */
+export const TOWER_STATUS_GROUP: Record<Exclude<StatusGroup, "total" | "on_time">, OrderTowerStatus[]> = {
+  delayed: ["DELAYED"],
+  getting_delayed: ["AT_RISK"],
+  in_production: ["IN_PRODUCTION"],
+  not_started: ["NOT_STARTED"],
+  completed: ["COMPLETED"],
+};
+
+/** Legacy engine display-status mapping (kept for older callers). */
+export const STATUS_GROUP_STATUSES: Record<Exclude<StatusGroup, "total" | "in_production">, DisplayStatus[]> = {
   delayed: ["DELAYED", "START_DELAYED"],
   getting_delayed: ["GETTING_DELAYED", "START_WARNING"],
   on_time: ["ON_TIME"],
@@ -14,20 +32,43 @@ export function parseStatusGroup(value: string | undefined): StatusGroup | undef
   if (!value) {
     return undefined;
   }
-  if (value === "delayed" || value === "getting_delayed" || value === "on_time" || value === "not_started" || value === "completed" || value === "total") {
+  if (
+    value === "delayed" ||
+    value === "getting_delayed" ||
+    value === "in_production" ||
+    value === "on_time" ||
+    value === "not_started" ||
+    value === "completed" ||
+    value === "total"
+  ) {
     return value;
   }
   return undefined;
+}
+
+export function matchesTowerStatusGroup(status: OrderTowerStatus, group: StatusGroup | undefined): boolean {
+  if (!group || group === "total") {
+    return true;
+  }
+  if (group === "on_time") {
+    return status === "IN_PRODUCTION";
+  }
+  if (group === "in_production") {
+    return status === "IN_PRODUCTION";
+  }
+  return TOWER_STATUS_GROUP[group].includes(status);
 }
 
 export function matchesStatusGroup(status: DisplayStatus, group: StatusGroup | undefined): boolean {
   if (!group || group === "total") {
     return true;
   }
+  if (group === "in_production") {
+    return status === "ON_TIME";
+  }
   return STATUS_GROUP_STATUSES[group].includes(status);
 }
 
-/** Worst-first ordering for live tracking (existing engine statuses). */
 export const STATUS_SEVERITY: Record<DisplayStatus, number> = {
   DELAYED: 0,
   START_DELAYED: 1,

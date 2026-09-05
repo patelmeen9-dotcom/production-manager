@@ -67,12 +67,13 @@ export default async function EntriesPage({
     from: get("from"),
     to: get("to"),
   };
+  const canEdit = canRecordProduction(context.role);
 
   return (
     <main className="mx-auto max-w-4xl space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold text-white">Production entries</h1>
-        {canRecordProduction(context.role) ? (
+        {canEdit ? (
           <Link className="text-sm text-sky-400" href="/entries/new">
             New entry
           </Link>
@@ -113,6 +114,7 @@ export default async function EntriesPage({
             <th className="p-2">Stage</th>
             <th className="p-2">Qty</th>
             <th className="p-2">User</th>
+            <th className="p-2"></th>
           </tr>
         </thead>
         <tbody>
@@ -123,6 +125,13 @@ export default async function EntriesPage({
               <td className="p-2">{entry.orderProcess.processName}</td>
               <td className="p-2">{entry.quantity}</td>
               <td className="p-2">{entry.createdBy.name}</td>
+              <td className="p-2">
+                {canEdit ? (
+                  <Link className="text-sky-400" href={`/entries/${entry.id}/edit`}>
+                    Edit
+                  </Link>
+                ) : null}
+              </td>
             </tr>
           ))}
         </tbody>
