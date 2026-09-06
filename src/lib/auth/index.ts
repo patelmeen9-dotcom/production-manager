@@ -132,17 +132,43 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       }
 
       // ── Revalidation: confirm the user still exists and is active ────────────
-      const dbUser = await prisma.user.findUnique({
-        where: { id: userId },
-        select: {
-          id: true,
-          email: true,
-          name: true,
-          role: true,
-          organizationId: true,
-          isActive: true,
-        },
-      });
+      //
+      // IMPORTANT: wrap in try/catch. If the DB is cold-starting (Neon ~16 s)
+      // and the query throws or times out, we must NOT propagate the error.
+      // An uncaught error here causes Auth.js to return a null session from
+      // auth(), which makes the app layout redirect to /login. But the edge
+      // middleware still sees the intact signed cookie and redirects /login
+      // back to /dashboard — producing an infinite redirect loop.
+      // On any DB error we return the existing cached claims unchanged so the
+      // user stays logged in, and schedule a retry in 30 seconds.
+      let dbUser: {
+        id: string;
+        email: string;
+        name: string;
+        role: Role;
+        organizationId: string | null;
+        isActive: boolean;
+      } | null = null;
+
+      try {
+        dbUser = await prisma.user.findUnique({
+          where: { id: userId },
+          select: {
+            id: true,
+            email: true,
+            name: true,
+            role: true,
+            organizationId: true,
+            isActive: true,
+          },
+        });
+      } catch (err) {
+        logger.warn("jwt_revalidation_db_error", { userId, err });
+        // Preserve the current session — retry revalidation in 30 seconds.
+        token.tokenRefreshedAt =
+          Math.floor(Date.now() / 1000) - TOKEN_REVALIDATION_SECONDS + 30;
+        return token;
+      }
 
       if (!dbUser || !dbUser.isActive) {
         // User deleted or deactivated — invalidate the token so middleware
