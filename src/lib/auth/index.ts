@@ -82,18 +82,35 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   ],
   callbacks: {
     /**
-     * Always keep token.sub in sync with the user id.
-     * Middleware uses the edge authConfig (no Prisma session callback); Auth.js
-     * defaults map session.user.id from token.sub. If only token.userId is set,
-     * middleware treats the user as logged out while Node auth() treats them as
-     * logged in — causing a /dashboard ↔ /login redirect loop.
+     * Populate the JWT at sign-in and revalidate from the DB at most once every
+     * TOKEN_REVALIDATION_SECONDS seconds (default 5 min).
+     *
+     * THE PREVIOUS BUG: this callback called prisma.user.findUnique on EVERY
+     * request (middleware, page renders, API routes). With Neon Serverless the
+     * first WebSocket connection takes ~16 s. That delay caused Auth.js to time
+     * out, wipe token.sub, and the middleware then saw the user as logged-out →
+     * redirect to /login → cookie still present → redirect to /dashboard → loop.
+     *
+     * THE FIX: only hit the DB when (a) this is a fresh sign-in (user arg is
+     * present) or (b) the revalidation TTL has expired. All other calls return
+     * the already-signed JWT claims instantly with no DB round-trip.
      */
-    async jwt({ token, user }) {
+    async jwt({ token, user, trigger }) {
+      const TOKEN_REVALIDATION_SECONDS = 5 * 60; // 5 minutes
+
+      // ── Fresh sign-in: populate token from the authorize() return value ──────
       if (user?.id) {
         token.sub = user.id;
         token.userId = user.id;
+        token.role = (user as { role: Role }).role;
+        token.organizationId = (user as { organizationId: string | null }).organizationId;
+        token.email = user.email ?? undefined;
+        token.name = user.name ?? undefined;
+        token.tokenRefreshedAt = Math.floor(Date.now() / 1000);
+        return token;
       }
 
+      // ── No user id in token → unauthenticated, nothing to do ────────────────
       const userId =
         (typeof token.userId === "string" && token.userId) ||
         (typeof token.sub === "string" && token.sub) ||
@@ -102,6 +119,19 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         return token;
       }
 
+      // ── Decide whether the revalidation TTL has expired ──────────────────────
+      const lastRefresh =
+        typeof token.tokenRefreshedAt === "number" ? token.tokenRefreshedAt : 0;
+      const secondsSinceRefresh = Math.floor(Date.now() / 1000) - lastRefresh;
+      const needsRevalidation =
+        trigger === "update" || secondsSinceRefresh >= TOKEN_REVALIDATION_SECONDS;
+
+      if (!needsRevalidation) {
+        // TTL still valid — return cached claims, zero DB calls.
+        return token;
+      }
+
+      // ── Revalidation: confirm the user still exists and is active ────────────
       const dbUser = await prisma.user.findUnique({
         where: { id: userId },
         select: {
@@ -115,12 +145,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       });
 
       if (!dbUser || !dbUser.isActive) {
+        // User deleted or deactivated — invalidate the token so middleware
+        // redirects them to /login on the next request.
         token.sub = undefined;
         token.userId = "";
         token.role = Role.VIEWER;
         token.organizationId = null;
         token.email = undefined;
         token.name = undefined;
+        token.tokenRefreshedAt = undefined;
         return token;
       }
 
@@ -130,6 +163,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       token.organizationId = dbUser.organizationId;
       token.email = dbUser.email;
       token.name = dbUser.name;
+      token.tokenRefreshedAt = Math.floor(Date.now() / 1000);
       return token;
     },
     async session({ session, token }) {

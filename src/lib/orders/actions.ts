@@ -750,8 +750,8 @@ export async function uploadOrderAttachmentAction(
  */
 export async function deleteOrderAttachmentAction(
   attachmentId: string,
-  _prev: FormState,
-  _formData: FormData,
+  _prev: FormState, // eslint-disable-line @typescript-eslint/no-unused-vars
+  _formData: FormData, // eslint-disable-line @typescript-eslint/no-unused-vars
 ): Promise<FormState> {
   let orderId = "";
   try {
