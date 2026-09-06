@@ -5,7 +5,12 @@ import { requireMasterWriter } from "@/lib/masters/auth";
 import { prisma } from "@/lib/db";
 import { requireGrantedPlant } from "@/lib/plants/access";
 import { formatOrderLineLabel } from "@/lib/orders/line-label";
+import { buildMatrixEditorModel } from "@/lib/orders/line-table";
 import { ProductionOrderSafeEditForm } from "@/components/orders/production-order-safe-edit-form";
+import { OrderLineMatrixEditForm } from "@/components/orders/order-line-matrix-edit-form";
+import { OrderLinesTable } from "@/components/orders/order-lines-table";
+import { OrderAttachmentsPanel } from "@/components/orders/order-attachments-panel";
+
 
 export const metadata: Metadata = { title: "Edit order" };
 
@@ -17,10 +22,14 @@ export default async function EditOrderPage({ params }: { params: Promise<{ id: 
     include: {
       lines: {
         include: {
-          product: true,
+          product: {
+            include: {
+              categoryAssignments: { include: { productCategory: { select: { id: true, name: true } } } },
+            },
+          },
           categorySelections: {
             include: {
-              productCategory: true,
+              productCategory: { select: { id: true, name: true } },
               selectedOptions: { include: { categoryOption: true } },
             },
           },
@@ -29,6 +38,7 @@ export default async function EditOrderPage({ params }: { params: Promise<{ id: 
         orderBy: { lineNumber: "asc" },
       },
       productionEntries: { take: 1, select: { id: true } },
+      attachments: { orderBy: { createdAt: "asc" } },
     },
   });
   if (!order) {
@@ -37,6 +47,32 @@ export default async function EditOrderPage({ params }: { params: Promise<{ id: 
   await requireGrantedPlant(context, order.plantId);
 
   const hasEntries = order.productionEntries.length > 0 || order.lifecycleStatus !== "NOT_STARTED";
+  const matrixModel = buildMatrixEditorModel(order.lines);
+  const safeForm = (
+    <ProductionOrderSafeEditForm
+      orderId={order.id}
+      remarks={order.remarks}
+      priority={order.priority}
+      notice={
+        hasEntries
+          ? "This order already has production entries. Only remarks, priority, and material received quantities can be changed."
+          : "Remarks, priority, and material received can be updated here. Use the matrix above for quantities."
+      }
+      lines={order.lines.map((line) => ({
+        id: line.id,
+        label: `Line ${line.lineNumber}: ${formatOrderLineLabel(line)}`,
+        remarks: line.remarks,
+      }))}
+      materials={order.lines.flatMap((line) =>
+        line.materials.map((material) => ({
+          id: material.id,
+          label: `${formatOrderLineLabel(line)} · ${material.name}`,
+          quantityReceived: material.quantityReceived,
+          totalNeeded: material.quantityPerUnit * line.quantity,
+        })),
+      )}
+    />
+  );
 
   return (
     <main className="mx-auto max-w-4xl space-y-4">
@@ -47,50 +83,35 @@ export default async function EditOrderPage({ params }: { params: Promise<{ id: 
         </Link>
       </div>
       {hasEntries ? (
-        <ProductionOrderSafeEditForm
-          orderId={order.id}
-          remarks={order.remarks}
-          priority={order.priority}
-          lines={order.lines.map((line) => ({
-            id: line.id,
-            label: `Line ${line.lineNumber}: ${formatOrderLineLabel(line)}`,
-            remarks: line.remarks,
-          }))}
-          materials={order.lines.flatMap((line) =>
-            line.materials.map((material) => ({
-              id: material.id,
-              label: `${formatOrderLineLabel(line)} · ${material.name}`,
-              quantityReceived: material.quantityReceived,
-              totalNeeded: material.quantityPerUnit * line.quantity,
-            })),
-          )}
-        />
+        <div className="space-y-3">
+          <section className="overflow-hidden rounded-lg border border-slate-800">
+            <div className="border-b border-slate-800 px-4 py-3">
+              <h2 className="text-sm font-medium text-white">Order lines</h2>
+              <p className="text-xs text-slate-500">Quantities are read-only after production has started.</p>
+            </div>
+            <OrderLinesTable lines={order.lines} />
+          </section>
+          {safeForm}
+        </div>
       ) : (
-        <div className="space-y-3 rounded-lg border border-slate-800 p-4 text-sm text-slate-300">
-          <p>
-            Full structural edit (lines, processes, categories, materials) for orders with no production yet will replace
-            the create flow. For now, use safe fields below or delete and recreate if you need a full rewrite.
-          </p>
-          <ProductionOrderSafeEditForm
-            orderId={order.id}
-            remarks={order.remarks}
-            priority={order.priority}
-            lines={order.lines.map((line) => ({
-              id: line.id,
-              label: `Line ${line.lineNumber}: ${formatOrderLineLabel(line)}`,
-              remarks: line.remarks,
-            }))}
-            materials={order.lines.flatMap((line) =>
-              line.materials.map((material) => ({
-                id: material.id,
-                label: `${formatOrderLineLabel(line)} · ${material.name}`,
-                quantityReceived: material.quantityReceived,
-                totalNeeded: material.quantityPerUnit * line.quantity,
-              })),
-            )}
-          />
+        <div className="space-y-6">
+          <OrderLineMatrixEditForm orderId={order.id} model={matrixModel} />
+          {safeForm}
         </div>
       )}
+
+      <section className="rounded border border-slate-700 bg-slate-900/50 px-4 py-4">
+        <OrderAttachmentsPanel
+          orderId={order.id}
+          attachments={order.attachments.map((a) => ({
+            id: a.id,
+            fileName: a.fileName,
+            fileType: a.fileType as "XLSX" | "PDF",
+            fileSizeBytes: a.fileSizeBytes,
+            createdAt: a.createdAt,
+          }))}
+        />
+      </section>
     </main>
   );
 }

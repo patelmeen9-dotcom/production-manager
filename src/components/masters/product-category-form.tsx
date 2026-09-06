@@ -7,7 +7,7 @@ import { ActiveCheckbox, TextField } from "@/components/masters/fields";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 
-type OptionDraft = { key: string; code: string; name: string; sortOrder: string; isActive: boolean };
+type OptionDraft = { key: string; id?: string; code: string; name: string; sortOrder: string; isActive: boolean };
 
 function newOption(index = 0): OptionDraft {
   return {
@@ -27,7 +27,7 @@ export function ProductCategoryForm(props: {
     inputType: "OPEN_TEXT" | "DROPDOWN";
     choiceMode: "SINGLE" | "MULTI" | null;
     isActive: boolean;
-    options: { code: string; name: string; sortOrder: number; isActive: boolean }[];
+    options: { id: string; code: string; name: string; sortOrder: number; isActive: boolean }[];
   };
 }) {
   const action = props.category
@@ -37,8 +37,9 @@ export function ProductCategoryForm(props: {
   const [choiceMode, setChoiceMode] = useState<"SINGLE" | "MULTI">(props.category?.choiceMode ?? "SINGLE");
   const [options, setOptions] = useState<OptionDraft[]>(
     props.category?.options.length
-      ? props.category.options.map((option, index) => ({
-          key: `opt-${index}`,
+      ? props.category.options.map((option) => ({
+          key: option.id,
+          id: option.id,
           code: option.code,
           name: option.name,
           sortOrder: String(option.sortOrder),
@@ -90,6 +91,7 @@ export function ProductCategoryForm(props: {
             <div className="mt-3 space-y-2">
               {options.map((option, index) => (
                 <div key={option.key} className="grid gap-2 rounded-md border border-slate-700 p-3 sm:grid-cols-4">
+                  <input type="hidden" name="optionId" value={option.id ?? ""} />
                   <input
                     name="optionCode"
                     placeholder="Code"

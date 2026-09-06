@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Role } from "@prisma/client";
 import { requireTenantContext } from "@/lib/auth/session";
-import { prisma } from "@/lib/db";
 import { canManagePlants } from "@/lib/plants/scope";
 import { loadPlantScope } from "@/lib/plants/access";
 import { SavedBanner } from "@/components/ui/saved-banner";
@@ -16,20 +15,9 @@ export default async function PlantsPage({
 }) {
   const context = await requireTenantContext();
   const params = await searchParams;
-  const { plants } = await loadPlantScope(context);
+  const { plants, grantedPlantIds } = await loadPlantScope(context);
   const manage = canManagePlants(context.role);
-
-  const granted = manage
-    ? new Set(plants.map((plant) => plant.id))
-    : new Set(
-        (
-          await prisma.userPlantAccess.findMany({
-            where: { userId: context.userId, organizationId: context.organizationId },
-            select: { plantId: true },
-          })
-        ).map((row) => row.plantId),
-      );
-
+  const granted = new Set(grantedPlantIds);
   const visible = plants.filter((plant) => granted.has(plant.id));
 
   return (

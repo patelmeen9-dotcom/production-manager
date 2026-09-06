@@ -6,16 +6,40 @@ import { prisma } from "@/lib/db";
 import { requireGrantedPlant } from "@/lib/plants/access";
 import { canManageMasters, canRecordProduction } from "@/lib/plants/scope";
 import { formatDateOnly } from "@/lib/orders/date-rules";
-import { formatOrderLineLabel } from "@/lib/orders/line-label";
 import { evaluateMaterialUsage } from "@/lib/orders/materials";
 import { evaluateOrganizationOrders } from "@/lib/production/evaluate-orders";
-import { displayStatusLabel } from "@/lib/production/engine";
+import { displayStatusLabel, type DisplayStatus } from "@/lib/production/engine";
 import { buildEntryLinesByOrder } from "@/lib/production/entry-form-data";
 import { ProductionEntryForm } from "@/components/production/production-entry-form";
 import { SpecialActivityEntryForm } from "@/components/production/special-activity-entry-form";
 import { SavedBanner } from "@/components/ui/saved-banner";
+import { OrderLinesTable } from "@/components/orders/order-lines-table";
+import { ExportLink } from "@/components/orders/export-link";
+import { OrderAttachmentsPanel } from "@/components/orders/order-attachments-panel";
+
 
 export const metadata: Metadata = { title: "Order" };
+
+const STATUS_STYLE: Record<DisplayStatus, string> = {
+  ON_TIME: "bg-on-time-bg text-on-time",
+  GETTING_DELAYED: "bg-warn-bg text-warn",
+  DELAYED: "bg-delayed-bg text-delayed",
+  NOT_STARTED: "bg-accent-bg text-ink-soft",
+  START_WARNING: "bg-warn-bg text-warn",
+  START_DELAYED: "bg-delayed-bg text-delayed",
+  COMPLETED: "bg-accent-bg text-ink-soft",
+  CANCELLED: "bg-panel-muted text-ink-faint",
+  ON_HOLD: "bg-panel-muted text-ink-faint",
+};
+
+function Stat(props: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-line bg-panel-muted px-3 py-2.5">
+      <p className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-soft">{props.label}</p>
+      <p className="mt-1 text-[13.5px] font-medium text-ink">{props.value}</p>
+    </div>
+  );
+}
 
 export default async function OrderDetailPage({
   params,
@@ -35,11 +59,15 @@ export default async function OrderDetailPage({
       plant: true,
       lines: {
         include: {
-          product: true,
+          product: {
+            include: {
+              categoryAssignments: { include: { productCategory: { select: { id: true, name: true } } } },
+            },
+          },
           categorySelections: {
             include: {
-              productCategory: true,
-              selectedOptions: { include: { categoryOption: true } },
+              productCategory: { select: { id: true, name: true } },
+              selectedOptions: { include: { categoryOption: { select: { name: true } } } },
             },
           },
           materials: {
@@ -70,6 +98,9 @@ export default async function OrderDetailPage({
         include: { specialActivity: true, createdBy: { select: { name: true } } },
         orderBy: { entryDate: "desc" },
         take: 20,
+      },
+      attachments: {
+        orderBy: { createdAt: "asc" },
       },
     },
   });
@@ -103,13 +134,11 @@ export default async function OrderDetailPage({
     id: row.specialActivity.id,
     name: row.specialActivity.name,
   }));
-  const productSummary =
-    order.lines.length > 0 ? order.lines.map((line) => formatOrderLineLabel(line)).join(", ") : order.product.name;
   const manage = canManageMasters(context.role);
+  const status = evaluation?.displayStatus ?? "NOT_STARTED";
 
-  const materialWarnings: string[] = [];
-  for (const line of order.lines) {
-    for (const material of line.materials) {
+  const materialRows = order.lines.flatMap((line) =>
+    line.materials.map((material) => {
       const usage = evaluateMaterialUsage({
         name: material.name,
         quantityPerUnit: material.quantityPerUnit,
@@ -117,30 +146,46 @@ export default async function OrderDetailPage({
         lineQuantity: line.quantity,
         stageCumulatives: material.stages.map((stage) => entrySums.get(stage.orderProcessId) ?? 0),
       });
-      if (usage.warning) {
-        materialWarnings.push(usage.warning);
-      }
-    }
-  }
+      return { line, material, usage };
+    }),
+  );
+  const materialWarnings = materialRows.map((row) => row.usage.warning).filter((warning): warning is string => Boolean(warning));
 
   return (
-    <main className="mx-auto max-w-5xl space-y-6">
+    <main className="mx-auto max-w-6xl space-y-5 pb-12">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold text-white">{order.orderNumber}</h1>
-          <p className="text-sm text-slate-400">
-            {order.client.name} · {productSummary} · {order.plant.name}
+          <Link className="text-[12px] text-accent hover:underline" href="/orders">
+            ← Orders
+          </Link>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <h1 className="text-[22px] font-bold tracking-tight text-ink">{order.orderNumber}</h1>
+            <span className={`inline-flex rounded px-2 py-0.5 text-[11.5px] font-semibold ${STATUS_STYLE[status]}`}>
+              {displayStatusLabel(status)}
+            </span>
+          </div>
+          <p className="mt-1 text-sm text-ink-soft">
+            {order.client.name} · {order.plant.name}
+            {order.priority !== "NORMAL" ? ` · ${order.priority}` : ""}
           </p>
         </div>
-        {manage ? (
-          <Link className="text-sm text-sky-400" href={`/orders/${order.id}/edit`}>
-            Edit order
-          </Link>
-        ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          <ExportLink href={`/api/orders/${order.id}/export`} label="Export order" />
+          {manage ? (
+            <Link
+              className="inline-flex items-center rounded-md bg-sky-600 px-3 py-1.5 text-[12.5px] font-medium text-white hover:bg-sky-500"
+              href={`/orders/${order.id}/edit`}
+            >
+              Edit order
+            </Link>
+          ) : null}
+        </div>
       </div>
+
       <SavedBanner message={query.saved} />
+
       {materialWarnings.length > 0 ? (
-        <section className="rounded-lg border border-amber-700/60 bg-amber-950/30 p-4 text-sm text-amber-200">
+        <section className="rounded-lg border border-warn/50 bg-warn-bg/40 p-4 text-sm text-warn">
           <p className="font-medium">Material warnings</p>
           <ul className="mt-2 list-disc space-y-1 pl-5">
             {materialWarnings.map((warning) => (
@@ -149,117 +194,170 @@ export default async function OrderDetailPage({
           </ul>
         </section>
       ) : null}
-      <section className="rounded-lg border border-slate-800 p-4 text-sm text-slate-200">
-        <p>Total quantity: {order.quantity}</p>
-        <p>Order date: {formatDateOnly(order.orderDate)}</p>
-        <p>Effective start: {formatDateOnly(order.effectiveStartDate)}</p>
-        <p>Due date: {formatDateOnly(order.resolvedDueDate)}</p>
-        <p>
-          Special activities requested:{" "}
-          {order.specialActivitiesRequested
-            ? requestedActivities.map((activity) => activity.name).join(", ") || "Yes"
-            : "No"}
-        </p>
-        <p>Lifecycle (stored): {order.lifecycleStatus}</p>
-        {evaluation ? (
-          <>
-            <p>Current stage: {evaluation.currentStageName ?? "—"}</p>
-            <p>
-              Finished goods: {evaluation.completedQuantity} / {order.quantity}
+
+      <section className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <Stat label="Total quantity" value={String(order.quantity)} />
+        <Stat label="Order date" value={formatDateOnly(order.orderDate)} />
+        <Stat label="Production start" value={formatDateOnly(order.effectiveStartDate)} />
+        <Stat label="Due date" value={formatDateOnly(order.resolvedDueDate)} />
+        <Stat
+          label="Finished goods"
+          value={evaluation ? `${evaluation.completedQuantity} / ${order.quantity}` : "—"}
+        />
+        <Stat label="Pending" value={evaluation ? String(evaluation.remainingQuantity) : "—"} />
+        <Stat label="Progress" value={evaluation ? `${evaluation.progressPercent.toFixed(1)}%` : "—"} />
+        <Stat label="Current stage" value={evaluation?.currentStageName ?? "—"} />
+      </section>
+
+      <section className="overflow-hidden rounded border border-line bg-panel">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3">
+          <div>
+            <h2 className="text-[13px] font-semibold text-ink">Order lines</h2>
+            <p className="text-[11px] text-ink-soft">
+              Rows are products. Columns are mapped categories. Each cell is quantity for that combination, or -.
             </p>
-            <p>Pending: {evaluation.remainingQuantity}</p>
-            <p>Progress: {evaluation.progressPercent.toFixed(1)}%</p>
-            <p>Status: {displayStatusLabel(evaluation.displayStatus)}</p>
-          </>
-        ) : null}
+          </div>
+        </div>
+        <OrderLinesTable lines={order.lines} />
       </section>
-      <section>
-        <h2 className="text-lg font-medium text-white">Order lines</h2>
-        <ul className="mt-2 space-y-3 text-sm text-slate-200">
-          {order.lines.map((line) => (
-            <li key={line.id} className="rounded border border-slate-800 p-3">
-              <p>
-                Line {line.lineNumber}: {formatOrderLineLabel(line)} → {line.quantity}
-                {line.product.details ? ` · ${line.product.details}` : ""}
-              </p>
-              {line.remarks ? <p className="text-slate-400">Remarks: {line.remarks}</p> : null}
-              {line.materials.length > 0 ? (
-                <ul className="mt-2 space-y-1 text-xs text-slate-400">
-                  {line.materials.map((material) => {
-                    const usage = evaluateMaterialUsage({
-                      name: material.name,
-                      quantityPerUnit: material.quantityPerUnit,
-                      quantityReceived: material.quantityReceived,
-                      lineQuantity: line.quantity,
-                      stageCumulatives: material.stages.map((stage) => entrySums.get(stage.orderProcessId) ?? 0),
-                    });
-                    return (
-                      <li key={material.id}>
-                        {material.name}: need {usage.totalNeeded} ({material.quantityPerUnit}/unit), received{" "}
-                        {material.quantityReceived}, used {usage.used}, available {usage.available}
-                      </li>
-                    );
-                  })}
-                </ul>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      </section>
-      <section>
-        <h2 className="text-lg font-medium text-white">Process snapshot</h2>
-        <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-slate-200">
-          {(evaluation?.stages ?? order.processes).map((step) => {
-            const lineLabel =
-              "orderLine" in step && step.orderLine ? `${step.orderLine.product.name} · ` : "";
-            return (
-              <li key={step.id}>
-                {lineLabel}
-                {"processName" in step ? step.processName : ""}{" "}
-                {"cumulative" in step
-                  ? `${step.cumulative} / ${step.plannedQuantity} (${step.percentComplete.toFixed(0)}%)`
-                  : `planned ${step.plannedQuantity}`}
-                {"expectedDays" in step && step.expectedDays != null
-                  ? ` · expected ${step.expectedDays} day${step.expectedDays === 1 ? "" : "s"}`
-                  : ""}
-                {"unitsPerDay" in step && step.unitsPerDay != null
-                  ? ` · ${step.unitsPerDay}/day (master)`
-                  : ""}
-              </li>
-            );
-          })}
-        </ol>
-      </section>
-      <section>
-        <h2 className="text-lg font-medium text-white">Production history</h2>
-        <table className="mt-2 w-full text-left text-sm">
-          <thead className="text-slate-400">
-            <tr>
-              <th className="p-2">Date</th>
-              <th className="p-2">Line</th>
-              <th className="p-2">Stage</th>
-              <th className="p-2">Special activity</th>
-              <th className="p-2">Qty</th>
-              <th className="p-2">User</th>
-            </tr>
-          </thead>
-          <tbody>
-            {order.productionEntries.map((entry) => (
-              <tr key={entry.id} className="border-t border-slate-800">
-                <td className="p-2">{formatDateOnly(entry.entryDate)}</td>
-                <td className="p-2">{entry.orderProcess.orderLine?.product.name ?? "—"}</td>
-                <td className="p-2">{entry.orderProcess.processName}</td>
-                <td className="p-2">{entry.specialActivity?.name ?? "—"}</td>
-                <td className="p-2">{entry.quantity}</td>
-                <td className="p-2">{entry.createdBy.name}</td>
+
+      {order.remarks ? (
+        <section className="rounded border border-line bg-panel px-4 py-3 text-sm text-ink-soft">
+          <span className="font-semibold text-ink">Remarks: </span>
+          {order.remarks}
+        </section>
+      ) : null}
+
+      {materialRows.length > 0 ? (
+        <section className="overflow-hidden rounded border border-line bg-panel">
+          <div className="border-b border-line px-4 py-3">
+            <h2 className="text-[13px] font-semibold text-ink">Materials</h2>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-[13px]">
+              <thead className="border-b border-line bg-panel-muted text-[10.5px] font-semibold uppercase tracking-wide text-ink-soft">
+                <tr>
+                  <th className="px-3 py-2.5">Line / product</th>
+                  <th className="px-3 py-2.5">Material</th>
+                  <th className="px-3 py-2.5 text-right">Needed</th>
+                  <th className="px-3 py-2.5 text-right">Received</th>
+                  <th className="px-3 py-2.5 text-right">Used</th>
+                  <th className="px-3 py-2.5 text-right">Available</th>
+                </tr>
+              </thead>
+              <tbody>
+                {materialRows.map(({ line, material, usage }) => (
+                  <tr key={material.id} className="border-b border-line last:border-0">
+                    <td className="px-3 py-2.5 text-ink">
+                      {line.product.name}{" "}
+                      <span className="font-mono text-ink-soft">#{line.lineNumber}</span>
+                    </td>
+                    <td className="px-3 py-2.5 text-ink">{material.name}</td>
+                    <td className="px-3 py-2.5 text-right font-mono text-ink-soft">{usage.totalNeeded}</td>
+                    <td className="px-3 py-2.5 text-right font-mono text-ink-soft">{material.quantityReceived}</td>
+                    <td className="px-3 py-2.5 text-right font-mono text-ink-soft">{usage.used}</td>
+                    <td className={`px-3 py-2.5 text-right font-mono ${usage.isShort ? "text-warn" : "text-ink-soft"}`}>
+                      {usage.available}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      <section className="overflow-hidden rounded border border-line bg-panel">
+        <div className="border-b border-line px-4 py-3">
+          <h2 className="text-[13px] font-semibold text-ink">Process snapshot</h2>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-left text-[13px]">
+            <thead className="border-b border-line bg-panel-muted text-[10.5px] font-semibold uppercase tracking-wide text-ink-soft">
+              <tr>
+                <th className="px-3 py-2.5">Product</th>
+                <th className="px-3 py-2.5">Process</th>
+                <th className="px-3 py-2.5 text-right">Progress</th>
+                <th className="px-3 py-2.5">Plan</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {(evaluation?.stages ?? order.processes).map((step) => {
+                const lineLabel =
+                  "orderLine" in step && step.orderLine ? step.orderLine.product.name : "";
+                const progress =
+                  "cumulative" in step
+                    ? `${step.cumulative} / ${step.plannedQuantity} (${step.percentComplete.toFixed(0)}%)`
+                    : `planned ${step.plannedQuantity}`;
+                const plan = [
+                  "expectedDays" in step && step.expectedDays != null
+                    ? `${step.expectedDays} expected day${step.expectedDays === 1 ? "" : "s"}`
+                    : null,
+                  "unitsPerDay" in step && step.unitsPerDay != null ? `${step.unitsPerDay}/day` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ");
+                return (
+                  <tr key={step.id} className="border-b border-line last:border-0">
+                    <td className="px-3 py-2.5 text-ink">{lineLabel || "—"}</td>
+                    <td className="px-3 py-2.5 text-ink">{"processName" in step ? step.processName : ""}</td>
+                    <td className="px-3 py-2.5 text-right font-mono text-ink-soft">{progress}</td>
+                    <td className="px-3 py-2.5 text-ink-soft">{plan || "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </section>
+
+      <section className="rounded border border-line bg-panel px-4 py-3 text-sm text-ink-soft">
+        <span className="font-semibold text-ink">Special activities: </span>
+        {order.specialActivitiesRequested
+          ? requestedActivities.map((activity) => activity.name).join(", ") || "Yes"
+          : "None requested"}
+        <span className="ml-3 text-ink-faint">Stored lifecycle: {order.lifecycleStatus}</span>
+      </section>
+
+      <section className="overflow-hidden rounded border border-line bg-panel">
+        <div className="border-b border-line px-4 py-3">
+          <h2 className="text-[13px] font-semibold text-ink">Production history</h2>
+        </div>
+        {order.productionEntries.length === 0 ? (
+          <p className="p-4 text-sm text-ink-faint">No production entries yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-[13px]">
+              <thead className="border-b border-line bg-panel-muted text-[10.5px] font-semibold uppercase tracking-wide text-ink-soft">
+                <tr>
+                  <th className="px-3 py-2.5">Date</th>
+                  <th className="px-3 py-2.5">Product</th>
+                  <th className="px-3 py-2.5">Stage</th>
+                  <th className="px-3 py-2.5">Special activity</th>
+                  <th className="px-3 py-2.5 text-right">Qty</th>
+                  <th className="px-3 py-2.5">User</th>
+                </tr>
+              </thead>
+              <tbody>
+                {order.productionEntries.map((entry) => (
+                  <tr key={entry.id} className="border-b border-line last:border-0">
+                    <td className="px-3 py-2.5 font-mono text-ink-soft">{formatDateOnly(entry.entryDate)}</td>
+                    <td className="px-3 py-2.5 text-ink">{entry.orderProcess.orderLine?.product.name ?? "—"}</td>
+                    <td className="px-3 py-2.5 text-ink">{entry.orderProcess.processName}</td>
+                    <td className="px-3 py-2.5 text-ink-soft">{entry.specialActivity?.name ?? "—"}</td>
+                    <td className="px-3 py-2.5 text-right font-mono text-ink">{entry.quantity}</td>
+                    <td className="px-3 py-2.5 text-ink-soft">{entry.createdBy.name}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
       {canRecordProduction(context.role) ? (
-        <section className="space-y-4">
-          <h2 className="text-lg font-medium text-white">Add incremental production</h2>
+        <section className="space-y-4 rounded border border-line bg-panel p-4">
+          <h2 className="text-[13px] font-semibold text-ink">Add incremental production</h2>
           <ProductionEntryForm
             defaultOrderId={order.id}
             orders={[{ id: order.id, orderNumber: order.orderNumber }]}
@@ -280,8 +378,10 @@ export default async function OrderDetailPage({
             }}
             showBackToList={false}
           />
-          <h2 className="text-lg font-medium text-white">Special activity / rework (legacy form)</h2>
-          <p className="text-xs text-slate-500">Prefer the combined stage dropdown above. This form remains for related-stage rework notes.</p>
+          <h2 className="text-[13px] font-semibold text-ink">Special activity / rework (legacy form)</h2>
+          <p className="text-[11px] text-ink-faint">
+            Prefer the combined stage dropdown above. This form remains for related-stage rework notes.
+          </p>
           <SpecialActivityEntryForm
             orderId={order.id}
             activities={requestedActivities}
@@ -292,10 +392,11 @@ export default async function OrderDetailPage({
           />
         </section>
       ) : null}
+
       {order.specialActivityEntries.length > 0 ? (
-        <section>
-          <h2 className="text-lg font-medium text-white">Special activity history</h2>
-          <ul className="mt-2 space-y-1 text-sm text-slate-300">
+        <section className="rounded border border-line bg-panel px-4 py-3">
+          <h2 className="text-[13px] font-semibold text-ink">Special activity history</h2>
+          <ul className="mt-2 space-y-1 text-sm text-ink-soft">
             {order.specialActivityEntries.map((entry) => (
               <li key={entry.id}>
                 {formatDateOnly(entry.entryDate)} · {entry.specialActivity.name} · {entry.quantity} · {entry.createdBy.name}
@@ -304,11 +405,19 @@ export default async function OrderDetailPage({
           </ul>
         </section>
       ) : null}
-      <p>
-        <Link className="text-sm text-sky-400" href="/orders">
-          Back to orders
-        </Link>
-      </p>
+
+      <section className="rounded border border-line bg-panel px-4 py-4">
+        <OrderAttachmentsPanel
+          orderId={order.id}
+          attachments={order.attachments.map((a) => ({
+            id: a.id,
+            fileName: a.fileName,
+            fileType: a.fileType as "XLSX" | "PDF",
+            fileSizeBytes: a.fileSizeBytes,
+            createdAt: a.createdAt,
+          }))}
+        />
+      </section>
     </main>
   );
 }

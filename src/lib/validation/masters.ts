@@ -37,6 +37,7 @@ export const productSchema = z.object({
 });
 
 export const productCategoryOptionSchema = z.object({
+  id: z.string().trim().optional(),
   code: z.string().trim().min(1, "Option code is required.").max(40),
   name: z.string().trim().min(1, "Option name is required.").max(160),
   sortOrder: z.coerce.number().int().min(0).max(9999).default(0),
@@ -63,6 +64,28 @@ export const productCategorySchema = z
           message: "Add at least one category option for dropdown categories.",
           path: ["options"],
         });
+      }
+      const codes = new Set<string>();
+      const names = new Set<string>();
+      for (const [index, option] of value.options.entries()) {
+        const code = option.code.trim().toUpperCase();
+        const name = option.name.trim().toLowerCase();
+        if (codes.has(code)) {
+          ctx.addIssue({
+            code: "custom",
+            message: `Duplicate option code "${option.code}".`,
+            path: ["options", index, "code"],
+          });
+        }
+        codes.add(code);
+        if (names.has(name)) {
+          ctx.addIssue({
+            code: "custom",
+            message: `Duplicate option name "${option.name}".`,
+            path: ["options", index, "name"],
+          });
+        }
+        names.add(name);
       }
     }
   });

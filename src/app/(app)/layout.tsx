@@ -11,29 +11,18 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     redirect("/login");
   }
 
-  const organization = context.organizationId
-    ? await prisma.organization.findUnique({
-        where: { id: context.organizationId },
-        select: { name: true },
-      })
-    : null;
+  const [organization, plantState] = context.organizationId
+    ? await Promise.all([
+        prisma.organization.findUnique({
+          where: { id: context.organizationId },
+          select: { name: true },
+        }),
+        loadPlantScope(context),
+      ])
+    : [null, { scope: { mode: "none" as const }, plants: [] as { id: string; name: string; isActive: boolean }[], grantedPlantIds: [] as string[] }];
 
-  const plantState = context.organizationId
-    ? await loadPlantScope(context)
-    : { scope: { mode: "none" as const }, plants: [] };
-
-  const grantedIds = canUseAllPlantsView(context.role)
-    ? new Set(plantState.plants.map((plant) => plant.id))
-    : new Set(
-        (
-          await prisma.userPlantAccess.findMany({
-            where: { userId: context.userId, organizationId: context.organizationId ?? undefined },
-            select: { plantId: true },
-          })
-        ).map((row) => row.plantId),
-      );
-
-  const visiblePlants = plantState.plants.filter((plant) => grantedIds.has(plant.id));
+  const granted = new Set(plantState.grantedPlantIds ?? []);
+  const visiblePlants = plantState.plants.filter((plant) => granted.has(plant.id));
 
   return (
     <div className="min-h-screen">

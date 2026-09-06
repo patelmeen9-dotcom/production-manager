@@ -11,6 +11,7 @@ export function ProductionOrderSafeEditForm(props: {
   priority: string;
   lines: { id: string; label: string; remarks: string | null }[];
   materials: { id: string; label: string; quantityReceived: number; totalNeeded: number }[];
+  notice: string;
 }) {
   const action = updateProductionOrderSafeAction.bind(null, props.orderId);
   const lineRemarksJson = JSON.stringify(
@@ -23,10 +24,7 @@ export function ProductionOrderSafeEditForm(props: {
   return (
     <ActionForm action={action} submitLabel="Save safe edits">
       <input type="hidden" name="lineRemarksJson" id="lineRemarksJson" value={lineRemarksJson} />
-      <p className="text-sm text-amber-200">
-        This order already has production entries. Only remarks, priority, and material received quantities can be
-        changed.
-      </p>
+      <p className="text-sm text-amber-200">{props.notice}</p>
       <FormGrid>
         <div>
           <Label htmlFor="priority">Priority</Label>

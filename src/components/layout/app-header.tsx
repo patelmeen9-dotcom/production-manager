@@ -7,6 +7,14 @@ import type { PlantScope } from "@/lib/plants/scope";
 
 type PlantOption = { id: string; name: string };
 
+function NavLink(props: { href: string; children: React.ReactNode }) {
+  return (
+    <Link prefetch={false} className="text-ink-soft hover:text-ink" href={props.href}>
+      {props.children}
+    </Link>
+  );
+}
+
 export function AppHeader(props: {
   organizationName: string | null;
   role: string;
@@ -42,54 +50,26 @@ export function AppHeader(props: {
       </div>
       {props.organizationName ? (
         <nav className="mt-3 flex flex-wrap gap-4 text-sm">
-          <Link className="text-ink-soft hover:text-ink" href="/dashboard">
-            Dashboard
-          </Link>
-          <Link className="text-ink-soft hover:text-ink" href="/orders">
-            Orders
-          </Link>
-          <Link className="text-ink-soft hover:text-ink" href="/entries">
-            Entries
-          </Link>
-          <Link className="text-ink-soft hover:text-ink" href="/plants">
-            Plants
-          </Link>
-          <Link className="text-ink-soft hover:text-ink" href="/clients">
-            Clients
-          </Link>
-          <Link className="text-ink-soft hover:text-ink" href="/products">
-            Products
-          </Link>
-          <Link className="text-ink-soft hover:text-ink" href="/product-categories">
-            Product categories
-          </Link>
-          <Link className="text-ink-soft hover:text-ink" href="/processes">
-            Processes
-          </Link>
-          <Link className="text-ink-soft hover:text-ink" href="/mappings">
-            Mappings
-          </Link>
-          <Link className="text-ink-soft hover:text-ink" href="/special-activities">
-            Special activities
-          </Link>
+          <NavLink href="/dashboard">Dashboard</NavLink>
+          <NavLink href="/orders">Orders</NavLink>
+          <NavLink href="/entries">Entries</NavLink>
+          <NavLink href="/plants">Plants</NavLink>
+          <NavLink href="/clients">Clients</NavLink>
+          <NavLink href="/products">Products</NavLink>
+          <NavLink href="/product-categories">Product categories</NavLink>
+          <NavLink href="/processes">Processes</NavLink>
+          <NavLink href="/mappings">Mappings</NavLink>
+          <NavLink href="/special-activities">Special activities</NavLink>
           {props.canManageOrg ? (
             <>
-              <Link className="text-ink-soft hover:text-ink" href="/organization">
-                Organization
-              </Link>
-              <Link className="text-ink-soft hover:text-ink" href="/users">
-                Users
-              </Link>
+              <NavLink href="/organization">Organization</NavLink>
+              <NavLink href="/users">Users</NavLink>
             </>
           ) : null}
           {props.canSeeAudit ? (
             <>
-              <Link className="text-ink-soft hover:text-ink" href="/import">
-                Import
-              </Link>
-              <Link className="text-ink-soft hover:text-ink" href="/audit">
-                Audit
-              </Link>
+              <NavLink href="/import">Import</NavLink>
+              <NavLink href="/audit">Audit</NavLink>
             </>
           ) : null}
         </nav>

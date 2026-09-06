@@ -3,23 +3,13 @@ import { ProductionOrderForm } from "@/components/orders/production-order-form";
 import { requireMasterWriter } from "@/lib/masters/auth";
 import { prisma } from "@/lib/db";
 import { loadPlantScope } from "@/lib/plants/access";
-import { canUseAllPlantsView } from "@/lib/plants/scope";
 
 export const metadata: Metadata = { title: "New order" };
 
 export default async function NewOrderPage() {
   const context = await requireMasterWriter();
-  const { plants } = await loadPlantScope(context);
-  const grantedIds = canUseAllPlantsView(context.role)
-    ? new Set(plants.map((plant) => plant.id))
-    : new Set(
-        (
-          await prisma.userPlantAccess.findMany({
-            where: { userId: context.userId, organizationId: context.organizationId },
-            select: { plantId: true },
-          })
-        ).map((row) => row.plantId),
-      );
+  const { plants, grantedPlantIds } = await loadPlantScope(context);
+  const grantedIds = new Set(grantedPlantIds);
 
   const [clients, products, categories, specialActivities, mappings] = await Promise.all([
     prisma.client.findMany({
@@ -68,9 +58,9 @@ export default async function NewOrderPage() {
     <main className="mx-auto max-w-5xl space-y-4">
       <h1 className="text-2xl font-semibold text-white">New production order</h1>
       <p className="text-sm text-slate-400">
-        Process lists inherit from plant + product mappings and can be customized per line. Set optional expected
-        days per process (units/day comes from the process master). Product categories are optional. Materials are
-        tracked per line.
+        Enter quantities in the product × category matrix. Columns come from each product’s mapped categories.
+        Process lists inherit from plant + product mappings and can be customized per product. Materials are tracked
+        per product.
       </p>
       <ProductionOrderForm
         clients={clients}

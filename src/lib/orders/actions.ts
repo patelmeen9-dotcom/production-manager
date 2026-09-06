@@ -9,10 +9,22 @@ import { requireMasterWriter } from "@/lib/masters/auth";
 import { requireGrantedPlant } from "@/lib/plants/access";
 import { parseDateOnly, resolveDueDate, resolveEffectiveStartDate } from "@/lib/orders/date-rules";
 import { writeAuditLog } from "@/lib/audit/write";
-import { productionOrderSafeEditSchema, productionOrderSchema } from "@/lib/validation/orders";
+import {
+  orderLineMatrixEditSchema,
+  productionOrderSafeEditSchema,
+  productionOrderSchema,
+} from "@/lib/validation/orders";
 import { redirectAfterSave } from "@/lib/forms/redirect";
 import { rethrowNextNavigation } from "@/lib/forms/navigation";
 import type { FormState } from "@/lib/masters/actions";
+import {
+  detectFileType,
+  isAllowedFile,
+  saveOrderAttachment,
+  deleteAttachmentFile,
+} from "@/lib/orders/attachments";
+
+const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024; // 20 MB
 
 function optionalInt(value: string | undefined): number | null {
   if (!value) {
@@ -51,11 +63,6 @@ async function writeLineDetails(
   },
 ) {
   for (const selection of input.categorySelections) {
-    const hasText = Boolean(selection.textValue?.trim());
-    const hasOptions = selection.optionIds.length > 0;
-    if (!hasText && !hasOptions) {
-      continue;
-    }
     const created = await tx.productionOrderLineCategorySelection.create({
       data: {
         organizationId: input.organizationId,
@@ -283,6 +290,32 @@ export async function createProductionOrderAction(_prev: FormState, formData: Fo
       return created;
     });
 
+    // Save an optional file attachment submitted alongside the order.
+    const attachmentFile = formData.get("attachment") as File | null;
+    if (attachmentFile && attachmentFile.size > 0) {
+      if (!isAllowedFile(attachmentFile.name, attachmentFile.type)) {
+        return { error: "Attachment: only .xlsx and .pdf files are allowed." };
+      }
+      if (attachmentFile.size > MAX_FILE_SIZE_BYTES) {
+        return { error: "Attachment file too large. Maximum allowed size is 20 MB." };
+      }
+      const fileType = detectFileType(attachmentFile.name, attachmentFile.type);
+      if (fileType) {
+        const buffer = Buffer.from(await attachmentFile.arrayBuffer());
+        const storagePath = await saveOrderAttachment(order.id, attachmentFile.name, buffer);
+        await prisma.productionOrderAttachment.create({
+          data: {
+            organizationId: context.organizationId,
+            productionOrderId: order.id,
+            fileName: attachmentFile.name,
+            fileType,
+            storagePath,
+            fileSizeBytes: attachmentFile.size,
+          },
+        });
+      }
+    }
+
     revalidatePath("/orders");
     await writeAuditLog({
       organizationId: context.organizationId,
@@ -385,4 +418,362 @@ export async function updateProductionOrderSafeAction(
     };
   }
   redirectAfterSave(`/orders/${orderId}`, successMessage);
+}
+
+function lineCategoryIdsFromSelections(selections: { productCategoryId: string }[]): string[] {
+  const ids: string[] = [];
+  for (const selection of selections) {
+    if (!ids.includes(selection.productCategoryId)) {
+      ids.push(selection.productCategoryId);
+    }
+  }
+  return ids;
+}
+
+function ownedMatrixKey(
+  productId: string,
+  mappedCategoryIds: Set<string>,
+  selectionIds: string[],
+): string | null {
+  if (selectionIds.length > 1) {
+    return null;
+  }
+  if (selectionIds.length === 1) {
+    return `${productId}:${selectionIds[0]}`;
+  }
+  if (mappedCategoryIds.size === 0) {
+    return `${productId}:`;
+  }
+  return null;
+}
+
+export async function updateOrderLineMatrixAction(
+  orderId: string,
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  let successMessage = "";
+  try {
+    const context = await requireMasterWriter();
+    let cellsRaw: unknown;
+    try {
+      cellsRaw = JSON.parse(String(formData.get("matrixJson") ?? "[]"));
+    } catch {
+      return { error: "Invalid quantity matrix payload." };
+    }
+    const parsed = orderLineMatrixEditSchema.safeParse({ cells: cellsRaw });
+    if (!parsed.success) {
+      return { error: parsed.error.issues[0]?.message ?? "Invalid quantity matrix." };
+    }
+
+    const order = await prisma.productionOrder.findFirst({
+      where: { id: orderId, organizationId: context.organizationId },
+      include: {
+        productionEntries: { take: 1, select: { id: true } },
+        lines: {
+          include: {
+            product: { include: { categoryAssignments: { select: { productCategoryId: true } } } },
+            categorySelections: { select: { productCategoryId: true } },
+            processes: { orderBy: { sequence: "asc" as const } },
+            materials: {
+              include: { stages: { include: { orderProcess: { select: { processCode: true } } } } },
+            },
+          },
+          orderBy: { lineNumber: "asc" },
+        },
+      },
+    });
+    if (!order) {
+      return { error: "Order not found." };
+    }
+    await requireGrantedPlant(context, order.plantId);
+    if (order.productionEntries.length > 0 || order.lifecycleStatus !== "NOT_STARTED") {
+      return { error: "Quantities cannot be changed after production has started." };
+    }
+    if (order.lines.length === 0) {
+      return { error: "This order has no lines to update." };
+    }
+
+    const mappedByProduct = new Map<string, Set<string>>();
+    const linesByKey = new Map<string, typeof order.lines>();
+    for (const line of order.lines) {
+      const mapped = mappedByProduct.get(line.productId) ?? new Set<string>();
+      for (const assignment of line.product.categoryAssignments) {
+        mapped.add(assignment.productCategoryId);
+      }
+      mappedByProduct.set(line.productId, mapped);
+    }
+    for (const line of order.lines) {
+      const mapped = mappedByProduct.get(line.productId) ?? new Set<string>();
+      const key = ownedMatrixKey(
+        line.productId,
+        mapped,
+        lineCategoryIdsFromSelections(line.categorySelections),
+      );
+      if (!key) {
+        continue;
+      }
+      const list = linesByKey.get(key) ?? [];
+      list.push(line);
+      linesByKey.set(key, list);
+    }
+
+    const submittedKeys = new Set<string>();
+    for (const cell of parsed.data.cells) {
+      const mapped = mappedByProduct.get(cell.productId);
+      if (!mapped) {
+        return { error: "A submitted product is not on this order." };
+      }
+      if (cell.categoryId) {
+        if (!mapped.has(cell.categoryId)) {
+          return { error: "A submitted category is not mapped to that product." };
+        }
+      } else if (mapped.size > 0) {
+        return { error: "Uncategorized quantity is only allowed for products with no mapped categories." };
+      }
+      const key = `${cell.productId}:${cell.categoryId ?? ""}`;
+      if (submittedKeys.has(key)) {
+        return { error: "Duplicate product and category quantity." };
+      }
+      submittedKeys.add(key);
+    }
+
+    const positiveCells = parsed.data.cells.filter((cell) => cell.quantity > 0);
+    const leftoverCount = order.lines.filter((line) => {
+      const mapped = mappedByProduct.get(line.productId) ?? new Set<string>();
+      return (
+        ownedMatrixKey(line.productId, mapped, lineCategoryIdsFromSelections(line.categorySelections)) ==
+        null
+      );
+    }).length;
+    if (positiveCells.length === 0 && leftoverCount === 0) {
+      return { error: "Total order quantity must be greater than zero." };
+    }
+
+    await prisma.$transaction(async (tx) => {
+      let nextTempLineNumber = 100_000;
+      for (const cell of parsed.data.cells) {
+        const key = `${cell.productId}:${cell.categoryId ?? ""}`;
+        const existing = linesByKey.get(key) ?? [];
+        if (cell.quantity <= 0) {
+          if (existing.length > 0) {
+            await tx.productionOrderLine.deleteMany({
+              where: { id: { in: existing.map((line) => line.id) } },
+            });
+          }
+          continue;
+        }
+
+        const keep = existing[0];
+        if (keep) {
+          await tx.productionOrderLine.update({
+            where: { id: keep.id },
+            data: { quantity: cell.quantity },
+          });
+          await tx.productionOrderProcess.updateMany({
+            where: { productionOrderLineId: keep.id },
+            data: { plannedQuantity: cell.quantity },
+          });
+          if (existing.length > 1) {
+            await tx.productionOrderLine.deleteMany({
+              where: { id: { in: existing.slice(1).map((line) => line.id) } },
+            });
+          }
+          continue;
+        }
+
+        const template = order.lines.find((line) => line.productId === cell.productId);
+        if (!template || template.processes.length === 0) {
+          throw new AppError(
+            "VALIDATION",
+            "Cannot add a quantity cell without an existing process snapshot for that product.",
+            400,
+          );
+        }
+        const createdLine = await tx.productionOrderLine.create({
+          data: {
+            organizationId: order.organizationId,
+            productionOrderId: order.id,
+            productId: cell.productId,
+            quantity: cell.quantity,
+            remarks: template.remarks,
+            lineNumber: nextTempLineNumber++,
+          },
+        });
+        const processRows = [];
+        for (const process of template.processes) {
+          const row = await tx.productionOrderProcess.create({
+            data: {
+              organizationId: order.organizationId,
+              productionOrderId: order.id,
+              productionOrderLineId: createdLine.id,
+              processId: process.processId,
+              processName: process.processName,
+              processCode: process.processCode,
+              sequence: process.sequence,
+              plannedQuantity: cell.quantity,
+              expectedDays: process.expectedDays,
+            },
+          });
+          processRows.push(row);
+        }
+        await writeLineDetails(tx, {
+          organizationId: order.organizationId,
+          lineId: createdLine.id,
+          categorySelections: cell.categoryId
+            ? [{ productCategoryId: cell.categoryId, textValue: "", optionIds: [] }]
+            : [],
+          materials: template.materials.map((material) => ({
+            name: material.name,
+            quantityPerUnit: material.quantityPerUnit,
+            quantityReceived: material.quantityReceived,
+            processCodes: material.stages.map((stage) => stage.orderProcess.processCode),
+          })),
+          processRows,
+        });
+      }
+
+      const remaining = await tx.productionOrderLine.findMany({
+        where: { productionOrderId: order.id },
+        orderBy: { lineNumber: "asc" },
+      });
+      if (remaining.length === 0) {
+        throw new AppError("VALIDATION", "Total order quantity must be greater than zero.", 400);
+      }
+      for (const [index, line] of remaining.entries()) {
+        await tx.productionOrderLine.update({
+          where: { id: line.id },
+          data: { lineNumber: 20_000 + index },
+        });
+      }
+      for (const [index, line] of remaining.entries()) {
+        await tx.productionOrderLine.update({
+          where: { id: line.id },
+          data: { lineNumber: index + 1 },
+        });
+      }
+      const totalQuantity = remaining.reduce((sum, line) => sum + line.quantity, 0);
+      await tx.productionOrder.update({
+        where: { id: order.id },
+        data: {
+          quantity: totalQuantity,
+          productId: remaining[0]!.productId,
+        },
+      });
+    });
+
+    revalidatePath("/orders");
+    revalidatePath(`/orders/${order.id}`);
+    await writeAuditLog({
+      organizationId: context.organizationId,
+      userId: context.userId,
+      action: "UPDATE",
+      entityType: "ProductionOrder",
+      entityId: order.id,
+      newValue: { matrixQuantityUpdate: true },
+    });
+    successMessage = "Order line quantities updated.";
+  } catch (error) {
+    rethrowNextNavigation(error);
+    return {
+      error: uniqueConstraintMessage(error, error instanceof AppError ? error.message : "Could not update quantities."),
+    };
+  }
+  redirectAfterSave(`/orders/${orderId}`, successMessage);
+}
+
+// ---------------------------------------------------------------------------
+// Attachment actions
+// ---------------------------------------------------------------------------
+
+/**
+ * Upload one attachment (XLSX or PDF) to an existing production order.
+ * Bound to orderId before being passed to a form action.
+ */
+export async function uploadOrderAttachmentAction(
+  orderId: string,
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  try {
+    const context = await requireMasterWriter();
+
+    const order = await prisma.productionOrder.findFirst({
+      where: { id: orderId, organizationId: context.organizationId },
+    });
+    if (!order) {
+      return { error: "Order not found." };
+    }
+    await requireGrantedPlant(context, order.plantId);
+
+    const file = formData.get("attachment") as File | null;
+    if (!file || file.size === 0) {
+      return { error: "No file selected." };
+    }
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      return { error: `File too large. Maximum allowed size is 20 MB.` };
+    }
+    if (!isAllowedFile(file.name, file.type)) {
+      return { error: "Only .xlsx and .pdf files are allowed." };
+    }
+
+    const fileType = detectFileType(file.name, file.type);
+    if (!fileType) {
+      return { error: "Unsupported file type. Only XLSX and PDF are allowed." };
+    }
+
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const storagePath = await saveOrderAttachment(order.id, file.name, buffer);
+
+    await prisma.productionOrderAttachment.create({
+      data: {
+        organizationId: context.organizationId,
+        productionOrderId: order.id,
+        fileName: file.name,
+        fileType,
+        storagePath,
+        fileSizeBytes: file.size,
+      },
+    });
+
+    revalidatePath(`/orders/${orderId}`);
+    return { success: `"${file.name}" uploaded successfully.` };
+  } catch (error) {
+    rethrowNextNavigation(error);
+    return { error: error instanceof AppError ? error.message : "Could not upload file." };
+  }
+}
+
+/**
+ * Delete an attachment record and its physical file.
+ * Bound to attachmentId before being passed to a form action.
+ */
+export async function deleteOrderAttachmentAction(
+  attachmentId: string,
+  _prev: FormState,
+  _formData: FormData,
+): Promise<FormState> {
+  let orderId = "";
+  try {
+    const context = await requireMasterWriter();
+
+    const attachment = await prisma.productionOrderAttachment.findFirst({
+      where: { id: attachmentId, organizationId: context.organizationId },
+      include: { productionOrder: { select: { plantId: true, id: true } } },
+    });
+    if (!attachment) {
+      return { error: "Attachment not found." };
+    }
+    await requireGrantedPlant(context, attachment.productionOrder.plantId);
+    orderId = attachment.productionOrder.id;
+
+    await prisma.productionOrderAttachment.delete({ where: { id: attachmentId } });
+    await deleteAttachmentFile(attachment.storagePath);
+
+    revalidatePath(`/orders/${orderId}`);
+    return { success: "Attachment deleted." };
+  } catch (error) {
+    rethrowNextNavigation(error);
+    return { error: error instanceof AppError ? error.message : "Could not delete attachment." };
+  }
 }

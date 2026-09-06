@@ -3,10 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
 import { AppError } from "@/lib/errors";
-import { uniqueConstraintMessage } from "@/lib/db-errors";
+import { uniqueConstraintMessage, writeErrorMessage } from "@/lib/db-errors";
 import { requireMasterWriter } from "@/lib/masters/auth";
+import { planCategoryOptionSync } from "@/lib/masters/category-options";
 import { assertProcessesBelongToOrganization, buildProcessMappingSteps } from "@/lib/masters/process-mapping";
 import { writeAuditLog } from "@/lib/audit/write";
+import { logger } from "@/lib/logger";
 import { requireGrantedPlant } from "@/lib/plants/access";
 import { redirectAfterSave } from "@/lib/forms/redirect";
 import { rethrowNextNavigation } from "@/lib/forms/navigation";
@@ -208,6 +210,7 @@ export async function updateProductAction(id: string, _prev: FormState, formData
 }
 
 function parseCategoryOptions(formData: FormData) {
+  const ids = formData.getAll("optionId").map(String);
   const codes = formData.getAll("optionCode").map(String);
   const names = formData.getAll("optionName").map(String);
   const sortOrders = formData.getAll("optionSortOrder").map(String);
@@ -219,6 +222,7 @@ function parseCategoryOptions(formData: FormData) {
       continue;
     }
     options.push({
+      id: ids[index] ?? "",
       code: codes[index] ?? "",
       name: names[index] ?? "",
       sortOrder: sortOrders[index] ?? "0",
@@ -291,7 +295,10 @@ export async function updateProductCategoryAction(id: string, _prev: FormState, 
     if (!parsed.success) {
       return { error: parsed.error.issues[0]?.message ?? "Invalid category." };
     }
-    const existing = await prisma.productCategory.findFirst({ where: { id, organizationId } });
+    const existing = await prisma.productCategory.findFirst({
+      where: { id, organizationId },
+      include: { options: { select: { id: true, code: true } } },
+    });
     if (!existing) {
       return { error: "Product category not found." };
     }
@@ -306,26 +313,81 @@ export async function updateProductCategoryAction(id: string, _prev: FormState, 
           isActive: parsed.data.isActive,
         },
       });
-      await tx.productCategoryOption.deleteMany({ where: { productCategoryId: id, organizationId } });
-      if (parsed.data.inputType === "DROPDOWN" && parsed.data.options.length > 0) {
-        await tx.productCategoryOption.createMany({
-          data: parsed.data.options.map((option, index) => ({
-            organizationId,
-            productCategoryId: id,
+
+      if (parsed.data.inputType !== "DROPDOWN") {
+        return;
+      }
+
+      const incoming = parsed.data.options.map((option) => ({
+        id: option.id?.trim() || undefined,
+        code: option.code,
+        name: option.name,
+        sortOrder: option.sortOrder,
+        isActive: option.isActive,
+      }));
+      const plan = planCategoryOptionSync(existing.options, incoming);
+
+      for (const update of plan.updates) {
+        const option = incoming[update.incomingIndex]!;
+        await tx.productCategoryOption.update({
+          where: { id: update.id },
+          data: {
             code: option.code.toUpperCase(),
             name: option.name,
-            sortOrder: option.sortOrder ?? index,
+            sortOrder: option.sortOrder ?? update.incomingIndex,
             isActive: option.isActive,
-            updatedAt: new Date(),
-          })),
+          },
         });
+      }
+
+      if (plan.creates.length > 0) {
+        await tx.productCategoryOption.createMany({
+          data: plan.creates.map((incomingIndex) => {
+            const option = incoming[incomingIndex]!;
+            return {
+              organizationId,
+              productCategoryId: id,
+              code: option.code.toUpperCase(),
+              name: option.name,
+              sortOrder: option.sortOrder ?? incomingIndex,
+              isActive: option.isActive,
+              updatedAt: new Date(),
+            };
+          }),
+        });
+      }
+
+      if (plan.removeIds.length > 0) {
+        const inUse = await tx.productionOrderLineCategoryOption.findMany({
+          where: { categoryOptionId: { in: plan.removeIds } },
+          select: { categoryOptionId: true },
+        });
+        const usedIds = new Set(inUse.map((row) => row.categoryOptionId));
+        const deletable = plan.removeIds.filter((optionId) => !usedIds.has(optionId));
+        const retain = plan.removeIds.filter((optionId) => usedIds.has(optionId));
+        if (deletable.length > 0) {
+          await tx.productCategoryOption.deleteMany({
+            where: { id: { in: deletable }, productCategoryId: id, organizationId },
+          });
+        }
+        if (retain.length > 0) {
+          await tx.productCategoryOption.updateMany({
+            where: { id: { in: retain }, productCategoryId: id, organizationId },
+            data: { isActive: false },
+          });
+        }
       }
     });
     revalidatePath("/product-categories");
     message = "Product category saved.";
   } catch (error) {
     rethrowNextNavigation(error);
-    return { error: uniqueConstraintMessage(error, error instanceof AppError ? error.message : "Could not update category.") };
+    logger.error("product_category_update_failed", {
+      categoryId: id,
+      code: error instanceof Error ? error.name : "unknown",
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return { error: writeErrorMessage(error, "Could not update category.") };
   }
   redirectAfterSave("/product-categories", message);
 }

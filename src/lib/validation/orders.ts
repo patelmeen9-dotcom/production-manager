@@ -81,6 +81,19 @@ export const productionOrderSchema = z
     }
   });
 
+/** Quantity cells for the product × category matrix (no-entry orders). */
+export const orderLineMatrixEditSchema = z.object({
+  cells: z
+    .array(
+      z.object({
+        productId: z.string().min(1),
+        categoryId: z.string().min(1).nullable(),
+        quantity: z.coerce.number().int().min(0, "Quantity cannot be negative."),
+      }),
+    )
+    .min(1, "Order lines are required."),
+});
+
 /** Safe edit: remarks + material received quantities only when production has started. */
 export const productionOrderSafeEditSchema = z.object({
   remarks: z.string().trim().max(1000).optional().or(z.literal("")),

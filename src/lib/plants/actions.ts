@@ -16,7 +16,7 @@ import { rethrowNextNavigation } from "@/lib/forms/navigation";
 export async function switchPlantAction(formData: FormData) {
   const context = await requireTenantContext();
   const requested = String(formData.get("plantId") ?? "");
-  const { plants } = await loadPlantScope(context);
+  const { plants, grantedPlantIds } = await loadPlantScope(context);
 
   if (requested === ALL_PLANTS) {
     if (!canUseAllPlantsView(context.role)) {
@@ -28,17 +28,8 @@ export async function switchPlantAction(formData: FormData) {
   }
 
   const plant = plants.find((item) => item.id === requested);
-  if (!plant) {
+  if (!plant || !grantedPlantIds.includes(plant.id)) {
     throw new AppError("FORBIDDEN", "You do not have access to this plant.", 403);
-  }
-
-  if (!canUseAllPlantsView(context.role)) {
-    const grant = await prisma.userPlantAccess.findUnique({
-      where: { userId_plantId: { userId: context.userId, plantId: plant.id } },
-    });
-    if (!grant) {
-      throw new AppError("FORBIDDEN", "You do not have access to this plant.", 403);
-    }
   }
 
   await setRequestedPlantId(plant.id);

@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
 }
 
 datasource db {
@@ -47,6 +48,7 @@ model Organization {
   specialActivityEntries SpecialActivityEntry[]
   auditLogs AuditLog[]
   importJobs ImportJob[]
+  orderAttachments ProductionOrderAttachment[]
 
   @@index([isActive])
 }
@@ -366,6 +368,7 @@ model ProductionOrder {
   requestedSpecialActivities ProductionOrderSpecialActivity[]
   productionEntries ProductionEntry[]
   specialActivityEntries SpecialActivityEntry[]
+  attachments  ProductionOrderAttachment[]
 
   @@unique([organizationId, orderNumber])
   @@index([organizationId, plantId, orderDate])
@@ -374,6 +377,28 @@ model ProductionOrder {
   @@index([organizationId, lifecycleStatus])
   @@index([organizationId, effectiveStartDate])
   @@index([organizationId, resolvedDueDate])
+}
+
+enum AttachmentFileType {
+  XLSX
+  PDF
+}
+
+/// File attachment (XLSX or PDF) uploaded against a production order.
+model ProductionOrderAttachment {
+  id                String             @id @default(cuid())
+  organizationId    String
+  productionOrderId String
+  fileName          String
+  fileType          AttachmentFileType
+  storagePath       String
+  fileSizeBytes     Int
+  createdAt         DateTime           @default(now())
+
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  productionOrder ProductionOrder @relation(fields: [productionOrderId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, productionOrderId])
 }
 
 /// One product + quantity row on a production order. Category answers and materials hang off the line.

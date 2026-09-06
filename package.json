@@ -28,6 +28,7 @@
     "@types/node": "^26.4.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
+    "@types/ws": "^8.18.1",
     "autoprefixer": "^10.5.4",
     "eslint": "^9.39.5",
     "eslint-config-next": "15.5.24",
@@ -39,6 +40,7 @@
     "vitest": "^4.1.11"
   },
   "dependencies": {
+    "@prisma/adapter-neon": "^6.14.0",
     "@prisma/client": "^6.14.0",
     "bcryptjs": "^3.0.3",
     "clsx": "^2.1.1",
@@ -51,6 +53,7 @@
     "react-dom": "^19.1.0",
     "recharts": "^3.10.1",
     "tailwind-merge": "^3.6.0",
+    "ws": "^8.21.3",
     "zod": "^4.5.4"
   }
 }

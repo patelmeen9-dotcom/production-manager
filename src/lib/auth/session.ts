@@ -13,22 +13,8 @@ import {
 
 export const getAuthContext = cache(async (): Promise<AuthContext | null> => {
   const session = await auth();
-  const userId = session?.user?.id;
-  if (!userId) {
-    return null;
-  }
-
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: {
-      id: true,
-      organizationId: true,
-      role: true,
-      isActive: true,
-    },
-  });
-
-  if (!user) {
+  const user = session?.user;
+  if (!user?.id) {
     return null;
   }
 
@@ -36,7 +22,7 @@ export const getAuthContext = cache(async (): Promise<AuthContext | null> => {
     userId: user.id,
     organizationId: user.organizationId,
     role: user.role,
-    isActive: user.isActive,
+    isActive: true,
   };
 });
 

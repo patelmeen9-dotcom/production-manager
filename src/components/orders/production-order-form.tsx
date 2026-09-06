@@ -40,10 +40,11 @@ type MaterialDraft = {
 type LineDraft = {
   key: string;
   productId: string;
-  quantity: string;
   remarks: string;
-  categoryText: Record<string, string>;
-  categoryOptions: Record<string, string[]>;
+  /** Quantity per mapped category id. Empty = not on the order. */
+  categoryQty: Record<string, string>;
+  /** Used when the product has no mapped categories. */
+  uncategorizedQty: string;
   processes: LineProcess[];
   materials: MaterialDraft[];
 };
@@ -62,13 +63,17 @@ function newLine(): LineDraft {
   return {
     key: `line-${Math.random().toString(36).slice(2, 10)}`,
     productId: "",
-    quantity: "",
     remarks: "",
-    categoryText: {},
-    categoryOptions: {},
+    categoryQty: {},
+    uncategorizedQty: "",
     processes: [],
     materials: [],
   };
+}
+
+function parseQty(value: string | undefined): number {
+  const qty = Number(value);
+  return Number.isFinite(qty) && qty > 0 ? qty : 0;
 }
 
 export function ProductionOrderForm(props: {
@@ -95,10 +100,29 @@ export function ProductionOrderForm(props: {
     [props.products],
   );
 
-  const totalQuantity = lines.reduce((sum, line) => {
-    const qty = Number(line.quantity);
-    return sum + (Number.isFinite(qty) && qty > 0 ? qty : 0);
-  }, 0);
+  const matrixColumns = useMemo(() => {
+    const map = new Map<string, CategoryDef>();
+    for (const line of lines) {
+      for (const categoryId of productsById.get(line.productId)?.categoryIds ?? []) {
+        const category = categoriesById.get(categoryId);
+        if (category) {
+          map.set(category.id, category);
+        }
+      }
+    }
+    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [lines, productsById, categoriesById]);
+
+  function rowTotal(line: LineDraft): number {
+    const product = productsById.get(line.productId);
+    const categoryIds = product?.categoryIds ?? [];
+    if (categoryIds.length === 0) {
+      return parseQty(line.uncategorizedQty);
+    }
+    return categoryIds.reduce((sum, categoryId) => sum + parseQty(line.categoryQty[categoryId]), 0);
+  }
+
+  const totalQuantity = lines.reduce((sum, line) => sum + rowTotal(line), 0);
 
   function updateLine(key: string, patch: Partial<LineDraft>) {
     setLines((current) => current.map((line) => (line.key === key ? { ...line, ...patch } : line)));
@@ -109,47 +133,48 @@ export function ProductionOrderForm(props: {
     updateLine(lineKey, {
       productId,
       processes: mapping.map((row) => ({ ...row, expectedDays: "" })),
-      categoryText: {},
-      categoryOptions: {},
+      categoryQty: {},
+      uncategorizedQty: "",
       materials: [],
     });
   }
 
   const linesJson = JSON.stringify(
-    lines.map((line) => ({
-      productId: line.productId,
-      quantity: line.quantity,
-      remarks: line.remarks,
-      categorySelections: (productsById.get(line.productId)?.categoryIds ?? [])
-        .map((categoryId) => {
-          const category = categoriesById.get(categoryId);
-          if (!category) {
-            return null;
-          }
-          const textValue = line.categoryText[categoryId] ?? "";
-          const optionIds = line.categoryOptions[categoryId] ?? [];
-          if (!textValue.trim() && optionIds.length === 0) {
-            return null;
-          }
-          return { productCategoryId: categoryId, textValue, optionIds };
-        })
-        .filter(Boolean),
-      processes: line.processes.map((process, index) => ({
-        processId: process.processId,
-        processCode: process.processCode,
-        processName: process.processName,
-        sequence: index + 1,
-        expectedDays: process.expectedDays,
-      })),
-      materials: line.materials
-        .filter((material) => material.name.trim())
-        .map((material) => ({
-          name: material.name,
-          quantityPerUnit: material.quantityPerUnit,
-          quantityReceived: material.quantityReceived,
-          processCodes: material.processCodes,
+    lines.flatMap((line) => {
+      const product = productsById.get(line.productId);
+      const categoryIds = product?.categoryIds ?? [];
+      const cells =
+        categoryIds.length === 0
+          ? parseQty(line.uncategorizedQty) > 0
+            ? [{ categoryId: null as string | null, quantity: parseQty(line.uncategorizedQty) }]
+            : []
+          : categoryIds
+              .map((categoryId) => ({ categoryId, quantity: parseQty(line.categoryQty[categoryId]) }))
+              .filter((cell) => cell.quantity > 0);
+      return cells.map((cell) => ({
+        productId: line.productId,
+        quantity: cell.quantity,
+        remarks: line.remarks,
+        categorySelections: cell.categoryId
+          ? [{ productCategoryId: cell.categoryId, textValue: "", optionIds: [] }]
+          : [],
+        processes: line.processes.map((process, index) => ({
+          processId: process.processId,
+          processCode: process.processCode,
+          processName: process.processName,
+          sequence: index + 1,
+          expectedDays: process.expectedDays,
         })),
-    })),
+        materials: line.materials
+          .filter((material) => material.name.trim())
+          .map((material) => ({
+            name: material.name,
+            quantityPerUnit: material.quantityPerUnit,
+            quantityReceived: material.quantityReceived,
+            processCodes: material.processCodes,
+          })),
+      }));
+    }),
   );
 
   return (
@@ -257,62 +282,128 @@ export function ProductionOrderForm(props: {
             <div>
               <h2 className="text-sm font-medium text-white">Order lines</h2>
               <p className="text-xs text-slate-500">
-                Categories are optional. Processes inherit from plant+product mapping — add/remove/reorder per line.
-                Materials are per line; total needed = qty/unit × line qty.
+                Rows are products. Columns are mapped categories. Enter quantity per product + category, or leave blank
+                for -. Total is calculated. Processes and materials stay per product.
               </p>
             </div>
-            <p className="text-sm text-slate-300">Total qty: {totalQuantity || "—"}</p>
+            <p className="text-sm text-slate-300">Total order qty: {totalQuantity || "—"}</p>
           </div>
 
-          <div className="mt-3 space-y-4">
-            {lines.map((line, index) => {
-              const product = productsById.get(line.productId);
-              const assignedCategories = (product?.categoryIds ?? [])
-                .map((id) => categoriesById.get(id))
-                .filter(Boolean) as CategoryDef[];
-              const lineQty = Number(line.quantity);
-              return (
-                <div key={line.key} className="space-y-3 rounded-md border border-slate-700 p-3">
-                  <div className="grid gap-3 sm:grid-cols-4">
-                    <div>
-                      <Label>Product</Label>
-                      <select
-                        required
-                        value={line.productId}
-                        onChange={(event) => applyProductMapping(line.key, event.target.value)}
-                        className="w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-2 text-sm"
-                      >
-                        <option value="">Select product</option>
-                        {props.products.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <Label>Quantity</Label>
-                      <input
-                        type="number"
-                        required
-                        min={1}
-                        value={line.quantity}
-                        onChange={(event) => updateLine(line.key, { quantity: event.target.value })}
-                        className="w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-2 text-sm"
-                      />
-                    </div>
-                    <div className="sm:col-span-2 flex items-end">
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        disabled={lines.length === 1}
-                        onClick={() => setLines((current) => current.filter((item) => item.key !== line.key))}
-                      >
-                        Remove line {index + 1}
-                      </Button>
-                    </div>
-                  </div>
+          <div className="mt-3 overflow-x-auto rounded-md border border-slate-700">
+            <table className="min-w-full text-left text-sm">
+              <thead className="border-b border-slate-700 bg-slate-900/80 text-[10.5px] font-semibold uppercase tracking-wide text-slate-400">
+                <tr>
+                  <th className="px-3 py-2">Product</th>
+                  {matrixColumns.map((category) => (
+                    <th key={category.id} className="px-3 py-2 text-right">
+                      {category.name}
+                    </th>
+                  ))}
+                  <th className="px-3 py-2 text-right">Total</th>
+                  <th className="px-3 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((line) => {
+                  const mappedIds = new Set(productsById.get(line.productId)?.categoryIds ?? []);
+                  const hasCategories = mappedIds.size > 0;
+                  return (
+                    <tr key={line.key} className="border-b border-slate-800">
+                      <td className="px-3 py-2">
+                        <select
+                          required
+                          value={line.productId}
+                          onChange={(event) => applyProductMapping(line.key, event.target.value)}
+                          className="w-full min-w-[160px] rounded-md border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm"
+                        >
+                          <option value="">Select product</option>
+                          {props.products.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {item.name}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      {matrixColumns.map((category) => {
+                        const applicable = mappedIds.has(category.id);
+                        return (
+                          <td key={category.id} className="px-3 py-2 text-right">
+                            {applicable ? (
+                              <input
+                                type="number"
+                                min={1}
+                                value={line.categoryQty[category.id] ?? ""}
+                                onChange={(event) =>
+                                  updateLine(line.key, {
+                                    categoryQty: { ...line.categoryQty, [category.id]: event.target.value },
+                                  })
+                                }
+                                className="ml-auto w-20 rounded-md border border-slate-600 bg-slate-900 px-2 py-1.5 text-right text-sm"
+                                placeholder="-"
+                              />
+                            ) : (
+                              <span className="text-slate-500">-</span>
+                            )}
+                          </td>
+                        );
+                      })}
+                      <td className="px-3 py-2 text-right font-mono text-slate-200">
+                        {hasCategories ? (
+                          rowTotal(line) || "-"
+                        ) : (
+                          <input
+                            type="number"
+                            min={1}
+                            required={!hasCategories && Boolean(line.productId)}
+                            value={line.uncategorizedQty}
+                            onChange={(event) => updateLine(line.key, { uncategorizedQty: event.target.value })}
+                            className="ml-auto w-20 rounded-md border border-slate-600 bg-slate-900 px-2 py-1.5 text-right text-sm"
+                            placeholder="qty"
+                          />
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          disabled={lines.length === 1}
+                          onClick={() => setLines((current) => current.filter((item) => item.key !== line.key))}
+                        >
+                          Remove
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr className="bg-slate-900/80">
+                  <td className="px-3 py-2 text-xs font-semibold text-slate-200">Total order quantity</td>
+                  {matrixColumns.map((category) => (
+                    <td key={category.id} />
+                  ))}
+                  <td className="px-3 py-2 text-right font-mono font-semibold text-white">{totalQuantity || "—"}</td>
+                  <td />
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <Button type="button" variant="secondary" className="mt-3" onClick={() => setLines((current) => [...current, newLine()])}>
+            Add product
+          </Button>
 
+          <div className="mt-4 space-y-4">
+            {lines.map((line) => {
+              const lineQty = rowTotal(line);
+              const product = productsById.get(line.productId);
+              if (!line.productId) {
+                return null;
+              }
+              return (
+                <div key={`${line.key}-details`} className="space-y-3 rounded-md border border-slate-700 p-3">
+                  <p className="text-sm font-medium text-white">
+                    {product?.name ?? "Product"} · qty {lineQty || "—"}
+                  </p>
                   <div>
                     <Label>Line remarks (optional)</Label>
                     <textarea
@@ -322,77 +413,6 @@ export function ProductionOrderForm(props: {
                       className="mt-1 w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-2 text-sm"
                     />
                   </div>
-
-                  {assignedCategories.length > 0 ? (
-                    <div className="space-y-2">
-                      <p className="text-xs font-medium text-slate-300">Categories (all optional)</p>
-                      {assignedCategories.map((category) => (
-                        <div key={category.id} className="rounded border border-slate-800 p-2">
-                          <Label>{category.name}</Label>
-                          {category.inputType === "OPEN_TEXT" ? (
-                            <input
-                              value={line.categoryText[category.id] ?? ""}
-                              onChange={(event) =>
-                                updateLine(line.key, {
-                                  categoryText: { ...line.categoryText, [category.id]: event.target.value },
-                                })
-                              }
-                              className="mt-1 w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-2 text-sm"
-                              placeholder="Optional"
-                            />
-                          ) : category.choiceMode === "MULTI" ? (
-                            <div className="mt-2 grid gap-1 sm:grid-cols-2">
-                              {category.options.filter((option) => option.isActive).map((option) => {
-                                const selected = new Set(line.categoryOptions[category.id] ?? []);
-                                return (
-                                  <label key={option.id} className="flex items-center gap-2 text-sm text-slate-200">
-                                    <input
-                                      type="checkbox"
-                                      checked={selected.has(option.id)}
-                                      onChange={(event) => {
-                                        const next = new Set(selected);
-                                        if (event.target.checked) next.add(option.id);
-                                        else next.delete(option.id);
-                                        updateLine(line.key, {
-                                          categoryOptions: {
-                                            ...line.categoryOptions,
-                                            [category.id]: [...next],
-                                          },
-                                        });
-                                      }}
-                                    />
-                                    {option.name}
-                                  </label>
-                                );
-                              })}
-                            </div>
-                          ) : (
-                            <select
-                              value={(line.categoryOptions[category.id] ?? [])[0] ?? ""}
-                              onChange={(event) =>
-                                updateLine(line.key, {
-                                  categoryOptions: {
-                                    ...line.categoryOptions,
-                                    [category.id]: event.target.value ? [event.target.value] : [],
-                                  },
-                                })
-                              }
-                              className="mt-1 w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-2 text-sm"
-                            >
-                              <option value="">Not specified</option>
-                              {category.options
-                                .filter((option) => option.isActive)
-                                .map((option) => (
-                                  <option key={option.id} value={option.id}>
-                                    {option.name}
-                                  </option>
-                                ))}
-                            </select>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
 
                   <div>
                     <p className="text-xs font-medium text-slate-300">Process stages (inherited — editable)</p>
@@ -626,9 +646,6 @@ export function ProductionOrderForm(props: {
               );
             })}
           </div>
-          <Button type="button" variant="secondary" className="mt-3" onClick={() => setLines((current) => [...current, newLine()])}>
-            Add line
-          </Button>
         </FormFull>
 
         <FormFull>
@@ -657,6 +674,23 @@ export function ProductionOrderForm(props: {
         ) : null}
         <FormFull>
           <TextField name="remarks" label="Order remarks" />
+        </FormFull>
+        <FormFull>
+          <div className="space-y-2">
+            <div>
+              <Label htmlFor="attachment">Attachment (optional)</Label>
+              <p className="text-xs text-slate-500">Attach an XLSX or PDF file — max 20 MB</p>
+            </div>
+            <input
+              id="attachment"
+              type="file"
+              name="attachment"
+              accept=".xlsx,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf"
+              className="block w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm text-slate-200
+                file:mr-3 file:rounded file:border-0 file:bg-slate-700 file:px-2 file:py-1 file:text-xs file:font-medium
+                file:text-slate-200 hover:file:bg-slate-600 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            />
+          </div>
         </FormFull>
       </FormGrid>
     </ActionForm>
